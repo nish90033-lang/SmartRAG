@@ -1,10 +1,9 @@
 fastapi
 uvicorn
 chromadb
-openai
 pymupdf
 rank_bm25
 python-multipart
-sentence-transformers
 groq
 python-dotenv
+numpy
