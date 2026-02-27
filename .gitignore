@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+
+# Uploads
+backend/uploads/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Chroma data
+backend/chroma/
