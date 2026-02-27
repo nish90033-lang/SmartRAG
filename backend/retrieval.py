@@ -4,7 +4,14 @@ from rank_bm25 import BM25Okapi
 import numpy as np
 
 # Load the embedding model (downloads once, then cached locally)
-model = SentenceTransformer('all-MiniLM-L6-v2')
+# Lazy load the model only when first needed
+_model = None
+
+def get_model():
+    global _model
+    if _model is None:
+        _model = SentenceTransformer('all-MiniLM-L6-v2')
+    return _model
 
 # Initialize ChromaDB
 chroma = chromadb.Client()
@@ -15,27 +22,27 @@ all_chunks = []
 all_metadatas = []
 
 def embed(text: str) -> list:
-    """Convert text to a vector embedding."""
-    return model.encode(text).tolist()
+    return get_model().encode(text).tolist()
 
 def store_chunks(chunks: list, doc_id: str, trust_score: float):
-    """Embed and store chunks in ChromaDB and in-memory BM25 index."""
+    """Embed and store chunks in batches for speed."""
     global all_chunks, all_metadatas
 
-    for i, chunk in enumerate(chunks):
-        vec = embed(chunk)
-        chunk_id = f"{doc_id}_{i}"
-        metadata = {"doc_id": doc_id, "trust": trust_score, "chunk_index": i}
+    print(f"Embedding {len(chunks)} chunks in batches...")
+    vectors = get_model().encode(chunks, batch_size=64, show_progress_bar=True).tolist()
 
-        collection.add(
-            documents=[chunk],
-            embeddings=[vec],
-            ids=[chunk_id],
-            metadatas=[metadata]
-        )
+    ids = [f"{doc_id}_{i}" for i in range(len(chunks))]
+    metadatas = [{"doc_id": doc_id, "trust": trust_score, "chunk_index": i} for i in range(len(chunks))]
 
-        all_chunks.append(chunk)
-        all_metadatas.append(metadata)
+    collection.add(
+        documents=chunks,
+        embeddings=vectors,
+        ids=ids,
+        metadatas=metadatas
+    )
+
+    all_chunks.extend(chunks)
+    all_metadatas.extend(metadatas)
 
     print(f"Stored {len(chunks)} chunks for doc '{doc_id}'")
 
