@@ -1,9 +1,9 @@
 fastapi
 uvicorn
-chromadb
 pymupdf
 rank_bm25
 python-multipart
 groq
 python-dotenv
 numpy
+scikit-learn

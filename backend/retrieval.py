@@ -1,43 +1,36 @@
-import chromadb
-from chromadb.utils import embedding_functions
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 import numpy as np
 
-# Use chromadb's built-in lightweight embeddings (no PyTorch needed)
-ef = embedding_functions.DefaultEmbeddingFunction()
-
-# Initialize ChromaDB
-chroma = chromadb.Client()
-collection = chroma.get_or_create_collection("smartrag", embedding_function=ef)
-
-# In-memory store for BM25
+# In-memory stores
 all_chunks = []
 all_metadatas = []
-
-def embed(text: str) -> list:
-    return ef([text])[0]
+vectorizer = TfidfVectorizer(max_features=5000)
+tfidf_matrix = None
 
 def store_chunks(chunks: list, doc_id: str, trust_score: float):
-    """Store chunks in batches."""
-    global all_chunks, all_metadatas
+    global all_chunks, all_metadatas, tfidf_matrix, vectorizer
 
     print(f"Storing {len(chunks)} chunks...")
-
-    ids = [f"{doc_id}_{i}" for i in range(len(chunks))]
+    ids_start = len(all_chunks)
     metadatas = [{"doc_id": doc_id, "trust": trust_score, "chunk_index": i} for i in range(len(chunks))]
-
-    # Add in batches of 100
-    batch_size = 100
-    for i in range(0, len(chunks), batch_size):
-        collection.add(
-            documents=chunks[i:i+batch_size],
-            ids=ids[i:i+batch_size],
-            metadatas=metadatas[i:i+batch_size]
-        )
 
     all_chunks.extend(chunks)
     all_metadatas.extend(metadatas)
+
+    # Refit TF-IDF on all chunks
+    tfidf_matrix = vectorizer.fit_transform(all_chunks)
     print(f"Stored {len(chunks)} chunks for doc '{doc_id}'")
+
+def vector_search(query: str, top_k: int = 10) -> list:
+    global tfidf_matrix
+    if tfidf_matrix is None or len(all_chunks) == 0:
+        return []
+    query_vec = vectorizer.transform([query])
+    scores = cosine_similarity(query_vec, tfidf_matrix)[0]
+    top_indices = np.argsort(scores)[::-1][:top_k]
+    return [(all_chunks[i], all_metadatas[i], float(scores[i])) for i in top_indices]
 
 def bm25_search(query: str, top_k: int = 10) -> list:
     if not all_chunks:
@@ -47,17 +40,6 @@ def bm25_search(query: str, top_k: int = 10) -> list:
     scores = bm25.get_scores(query.split())
     top_indices = np.argsort(scores)[::-1][:top_k]
     return [(all_chunks[i], all_metadatas[i], float(scores[i])) for i in top_indices]
-
-def vector_search(query: str, top_k: int = 10) -> list:
-    results = collection.query(
-        query_texts=[query],
-        n_results=min(top_k, collection.count())
-    )
-    chunks = results['documents'][0]
-    metadatas = results['metadatas'][0]
-    distances = results['distances'][0]
-    similarities = [1 / (1 + d) for d in distances]
-    return list(zip(chunks, metadatas, similarities))
 
 def hybrid_search(query: str, top_k: int = 10) -> list:
     vec_results = vector_search(query, top_k)
@@ -84,7 +66,7 @@ def rerank(query: str, candidates: list) -> list:
     reranked.sort(key=lambda x: -x[2])
     return reranked[:5]
 
-def is_answerable(candidates: list, threshold: float = 0.3) -> bool:
+def is_answerable(candidates: list, threshold: float = 0.1) -> bool:
     if not candidates:
         return False
     return candidates[0][2] >= threshold
