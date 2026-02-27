@@ -34,7 +34,7 @@ class QueryRequest(BaseModel):
     use_llm: bool = False  # Default to fallback mode for now
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"status": "SmartRAG is running"}
 
