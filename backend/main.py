@@ -9,7 +9,7 @@ import os
 from typing import Optional
 
 from ingest import ingest_document
-from retrieval import retrieve, build_user_index
+from retrieval import retrieve
 from llm import generate_answer, fallback_answer
 from database import (
     get_user_from_token, save_document, save_chunks,
@@ -33,9 +33,9 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 class QueryRequest(BaseModel):
     question: str
     use_llm: bool = True
+    doc_id: Optional[str] = None
 
 def get_current_user(authorization: Optional[str] = Header(None)):
-    """Extract and verify user from Authorization header."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
     token = authorization.replace("Bearer ", "")
@@ -69,11 +69,9 @@ async def upload_document(
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
 
-    # Check duplicate per user
     if check_duplicate(user_id, result["doc_hash"]):
         raise HTTPException(status_code=400, detail="You have already uploaded this document.")
 
-    # Save to Supabase
     save_document(
         user_id=user_id,
         doc_id=result["doc_id"],
@@ -99,15 +97,26 @@ def query_document(
     user = get_current_user(authorization)
     user_id = str(user.id)
 
-    # Load this user's chunks from Supabase
+    # Load user's chunks from Supabase
     user_chunks = get_user_chunks(user_id)
+
+    # Filter by selected document if provided
+    if request.doc_id:
+        user_chunks = [c for c in user_chunks if c["doc_id"] == request.doc_id]
+
     if not user_chunks:
-        raise HTTPException(status_code=400, detail="No documents uploaded yet.")
+        raise HTTPException(status_code=400, detail="No documents found. Please upload a PDF first.")
 
     chunks = [c["content"] for c in user_chunks]
-    metadatas = [{"doc_id": c["doc_id"], "trust": c["trust_score"], "chunk_index": c["chunk_index"]} for c in user_chunks]
+    metadatas = [
+        {
+            "doc_id": c["doc_id"],
+            "trust": c["trust_score"],
+            "chunk_index": c["chunk_index"]
+        }
+        for c in user_chunks
+    ]
 
-    # Build index and retrieve
     retrieval_result = retrieve(request.question, chunks, metadatas)
 
     if not retrieval_result["answerable"]:
