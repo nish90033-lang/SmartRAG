@@ -7,4 +7,5 @@ groq
 python-dotenv
 numpy
 scikit-learn
-supabase
+bcrypt
+pyjwt

@@ -14,7 +14,8 @@ from llm import generate_answer, fallback_answer
 from database import (
     get_user_from_token, save_document, save_chunks,
     get_user_chunks, save_chat, get_user_chat_history,
-    check_duplicate, get_user_documents
+    check_duplicate, get_user_documents,
+    create_user, login_user, create_token
 )
 
 app = FastAPI(title="SmartRAG API")
@@ -29,6 +30,10 @@ app.add_middleware(
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+class AuthRequest(BaseModel):
+    email: str
+    password: str
 
 class QueryRequest(BaseModel):
     question: str
@@ -52,13 +57,29 @@ def root():
 async def preflight_handler():
     return {"message": "Preflight OK"}
 
+@app.post("/auth/signup")
+def signup(request: AuthRequest):
+    user = create_user(request.email, request.password)
+    if not user:
+        raise HTTPException(status_code=400, detail="Email already registered.")
+    token = create_token(user["id"], user["email"])
+    return {"token": token, "user": user}
+
+@app.post("/auth/login")
+def login(request: AuthRequest):
+    user = login_user(request.email, request.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    token = create_token(user["id"], user["email"])
+    return {"token": token, "user": user}
+
 @app.post("/upload")
 async def upload_document(
     file: UploadFile = File(...),
     authorization: Optional[str] = Header(None)
 ):
     user = get_current_user(authorization)
-    user_id = str(user.id)
+    user_id = str(user["id"])
 
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as f:
@@ -95,12 +116,10 @@ def query_document(
     authorization: Optional[str] = Header(None)
 ):
     user = get_current_user(authorization)
-    user_id = str(user.id)
+    user_id = str(user["id"])
 
-    # Load user's chunks from Supabase
     user_chunks = get_user_chunks(user_id)
 
-    # Filter by selected document if provided
     if request.doc_id:
         user_chunks = [c for c in user_chunks if c["doc_id"] == request.doc_id]
 
@@ -151,13 +170,13 @@ def query_document(
 @app.get("/documents")
 def get_documents(authorization: Optional[str] = Header(None)):
     user = get_current_user(authorization)
-    docs = get_user_documents(str(user.id))
+    docs = get_user_documents(str(user["id"]))
     return {"documents": docs}
 
 @app.get("/history")
 def get_history(authorization: Optional[str] = Header(None)):
     user = get_current_user(authorization)
-    history = get_user_chat_history(str(user.id))
+    history = get_user_chat_history(str(user["id"]))
     return {"history": history}
 
 @app.delete("/history")

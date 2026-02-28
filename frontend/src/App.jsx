@@ -1,12 +1,7 @@
 import { useState, useEffect } from "react"
 import axios from "axios"
-import { createClient } from "@supabase/supabase-js"
 
-const API = "https://smartrag-backend.onrender.com"
-const supabase = createClient(
-  "https://nnlbggpbudktmzagigcj.supabase.co",
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5ubGJnZ3BidWRrdG16YWdpZ2NqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIyNjUyODYsImV4cCI6MjA4Nzg0MTI4Nn0.KRoz705J6yRHTOaigg69iWlBVuUXyglVSJz0aAi3Yi4"
-)
+const API = "http://localhost:8000"
 
 export default function App() {
   const [session, setSession] = useState(null)
@@ -16,6 +11,9 @@ export default function App() {
   const [authMode, setAuthMode] = useState("login")
   const [authError, setAuthError] = useState("")
   const [authLoading, setAuthLoading] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const [resetMode, setResetMode] = useState(false)
+  const [resetSent, setResetSent] = useState(false)
 
   const [file, setFile] = useState(null)
   const [uploading, setUploading] = useState(false)
@@ -30,8 +28,11 @@ export default function App() {
   const [expandedSource, setExpandedSource] = useState(null)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => setSession(session))
-    supabase.auth.onAuthStateChange((_event, session) => setSession(session))
+    const token = localStorage.getItem("smartrag_token")
+    const user = localStorage.getItem("smartrag_user")
+    if (token && user) {
+      setSession({ access_token: token, user: JSON.parse(user) })
+    }
   }, [])
 
   useEffect(() => {
@@ -41,6 +42,27 @@ export default function App() {
   const authHeaders = () => ({
     Authorization: `Bearer ${session?.access_token}`
   })
+
+  async function handleAuth() {
+    setAuthLoading(true)
+    setAuthError("")
+    try {
+      const endpoint = authMode === "login" ? "/auth/login" : "/auth/signup"
+      const res = await axios.post(`${API}${endpoint}`, { email, password })
+      localStorage.setItem("smartrag_token", res.data.token)
+      localStorage.setItem("smartrag_user", JSON.stringify(res.data.user))
+      setSession({ access_token: res.data.token, user: res.data.user })
+    } catch (err) {
+      setAuthError(err.response?.data?.detail || "Something went wrong.")
+    }
+    setAuthLoading(false)
+  }
+
+  async function handleReset() {
+    setAuthLoading(true)
+    setResetSent(true)
+    setAuthLoading(false)
+  }
 
   async function fetchDocuments() {
     try {
@@ -58,24 +80,6 @@ export default function App() {
     } catch (e) {
       console.error(e)
     }
-  }
-
-  async function handleAuth() {
-    setAuthLoading(true)
-    setAuthError("")
-    try {
-      if (authMode === "login") {
-        const { error } = await supabase.auth.signInWithPassword({ email, password })
-        if (error) setAuthError(error.message)
-      } else {
-        const { error } = await supabase.auth.signUp({ email, password })
-        if (error) setAuthError(error.message)
-        else setAuthError("Check your email to confirm your account!")
-      }
-    } catch (e) {
-      setAuthError("Something went wrong.")
-    }
-    setAuthLoading(false)
   }
 
   async function handleUpload() {
@@ -136,58 +140,136 @@ export default function App() {
             </p>
           </div>
 
-          <div style={{ display: "flex", marginBottom: 24, background: "rgba(255,255,255,0.05)", borderRadius: 10, padding: 4 }}>
-            {["login", "signup"].map(mode => (
-              <button key={mode} onClick={() => setAuthMode(mode)} style={{
-                flex: 1, padding: "8px", border: "none", borderRadius: 8, cursor: "pointer",
-                fontWeight: 600, fontSize: 14,
-                background: authMode === mode ? "linear-gradient(135deg, #38bdf8, #818cf8)" : "transparent",
-                color: authMode === mode ? "white" : "#94a3b8"
+          {!resetMode ? (
+            <>
+              <div style={{
+                display: "flex", marginBottom: 24,
+                background: "rgba(255,255,255,0.05)", borderRadius: 10, padding: 4
               }}>
-                {mode === "login" ? "Sign In" : "Sign Up"}
+                {["login", "signup"].map(mode => (
+                  <button key={mode} onClick={() => setAuthMode(mode)} style={{
+                    flex: 1, padding: "8px", border: "none", borderRadius: 8, cursor: "pointer",
+                    fontWeight: 600, fontSize: 14,
+                    background: authMode === mode ? "linear-gradient(135deg, #38bdf8, #818cf8)" : "transparent",
+                    color: authMode === mode ? "white" : "#94a3b8"
+                  }}>
+                    {mode === "login" ? "Sign In" : "Sign Up"}
+                  </button>
+                ))}
+              </div>
+
+              <input
+                type="email" placeholder="Email" value={email}
+                onChange={e => setEmail(e.target.value)}
+                style={{
+                  width: "100%", padding: "12px 16px", marginBottom: 12, borderRadius: 10,
+                  border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)",
+                  color: "white", fontSize: 14, outline: "none", boxSizing: "border-box"
+                }}
+              />
+
+              <div style={{ position: "relative", marginBottom: 20 }}>
+                <input
+                  type={showPassword ? "text" : "password"}
+                  placeholder="Password" value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && handleAuth()}
+                  style={{
+                    width: "100%", padding: "12px 16px", paddingRight: 48, borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)",
+                    color: "white", fontSize: 14, outline: "none", boxSizing: "border-box"
+                  }}
+                />
+                <button onClick={() => setShowPassword(!showPassword)} style={{
+                  position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
+                  background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "#64748b"
+                }}>
+                  {showPassword ? "🙈" : "👁️"}
+                </button>
+              </div>
+
+              {authError && (
+                <div style={{
+                  marginBottom: 16, padding: 12, borderRadius: 8, fontSize: 13,
+                  background: "rgba(239,68,68,0.1)", color: "#f87171",
+                  border: "1px solid rgba(239,68,68,0.3)"
+                }}>
+                  {authError}
+                </div>
+              )}
+
+              <button onClick={handleAuth} disabled={authLoading} style={{
+                width: "100%", padding: "13px", fontWeight: 700, fontSize: 15,
+                background: "linear-gradient(135deg, #38bdf8, #818cf8)",
+                color: "white", border: "none", borderRadius: 10, cursor: "pointer",
+                boxShadow: "0 4px 20px rgba(56,189,248,0.3)", marginBottom: 12
+              }}>
+                {authLoading ? "Please wait..." : authMode === "login" ? "Sign In →" : "Create Account →"}
               </button>
-            ))}
-          </div>
 
-          <input
-            type="email" placeholder="Email" value={email}
-            onChange={e => setEmail(e.target.value)}
-            style={{
-              width: "100%", padding: "12px 16px", marginBottom: 12, borderRadius: 10,
-              border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)",
-              color: "white", fontSize: 14, outline: "none", boxSizing: "border-box"
-            }}
-          />
-          <input
-            type="password" placeholder="Password" value={password}
-            onChange={e => setPassword(e.target.value)}
-            onKeyDown={e => e.key === "Enter" && handleAuth()}
-            style={{
-              width: "100%", padding: "12px 16px", marginBottom: 20, borderRadius: 10,
-              border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)",
-              color: "white", fontSize: 14, outline: "none", boxSizing: "border-box"
-            }}
-          />
+              {authMode === "login" && (
+                <button onClick={() => setResetMode(true)} style={{
+                  width: "100%", padding: "10px", fontWeight: 600, fontSize: 13,
+                  background: "transparent", color: "#64748b", border: "none",
+                  cursor: "pointer", textDecoration: "underline"
+                }}>
+                  Forgot password?
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <div style={{ textAlign: "center", marginBottom: 24 }}>
+                <div style={{ fontSize: 32, marginBottom: 8 }}>🔐</div>
+                <h3 style={{ margin: 0, color: "white" }}>Reset Password</h3>
+              </div>
 
-          {authError && (
-            <div style={{
-              marginBottom: 16, padding: 12, borderRadius: 8, fontSize: 13,
-              background: authError.includes("Check") ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-              color: authError.includes("Check") ? "#4ade80" : "#f87171",
-              border: `1px solid ${authError.includes("Check") ? "rgba(34,197,94,0.3)" : "rgba(239,68,68,0.3)"}`
-            }}>
-              {authError}
-            </div>
+              {resetSent ? (
+                <div style={{
+                  padding: 16, borderRadius: 10, marginBottom: 16,
+                  background: "rgba(56,189,248,0.1)", color: "#38bdf8",
+                  border: "1px solid rgba(56,189,248,0.3)", fontSize: 14, textAlign: "center"
+                }}>
+                  <p style={{ margin: "0 0 8px", fontWeight: 700 }}>Password Reset Info</p>
+                  <p style={{ margin: 0, fontSize: 13, color: "#94a3b8" }}>
+                    This app uses local authentication. Please create a new account with a different email
+                    or contact the admin to manually reset your password.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <p style={{ color: "#94a3b8", fontSize: 14, marginBottom: 20 }}>
+                    Enter your email address below.
+                  </p>
+                  <input
+                    type="email" placeholder="Email" value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    style={{
+                      width: "100%", padding: "12px 16px", marginBottom: 16, borderRadius: 10,
+                      border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)",
+                      color: "white", fontSize: 14, outline: "none", boxSizing: "border-box"
+                    }}
+                  />
+                  <button onClick={handleReset} disabled={authLoading} style={{
+                    width: "100%", padding: "13px", fontWeight: 700, fontSize: 15,
+                    background: "linear-gradient(135deg, #38bdf8, #818cf8)",
+                    color: "white", border: "none", borderRadius: 10, cursor: "pointer",
+                    marginBottom: 12
+                  }}>
+                    Submit
+                  </button>
+                </>
+              )}
+
+              <button onClick={() => { setResetMode(false); setResetSent(false) }} style={{
+                width: "100%", padding: "10px", fontWeight: 600, fontSize: 13,
+                background: "transparent", color: "#64748b", border: "none",
+                cursor: "pointer", textDecoration: "underline"
+              }}>
+                ← Back to Sign In
+              </button>
+            </>
           )}
-
-          <button onClick={handleAuth} disabled={authLoading} style={{
-            width: "100%", padding: "13px", fontWeight: 700, fontSize: 15,
-            background: "linear-gradient(135deg, #38bdf8, #818cf8)",
-            color: "white", border: "none", borderRadius: 10, cursor: "pointer",
-            boxShadow: "0 4px 20px rgba(56,189,248,0.3)"
-          }}>
-            {authLoading ? "Please wait..." : authMode === "login" ? "Sign In →" : "Create Account →"}
-          </button>
         </div>
       </div>
     )
@@ -220,11 +302,16 @@ export default function App() {
           { id: "chat", icon: "💬", label: "Chat" },
           { id: "history", icon: "🕘", label: "History" },
         ].map(item => (
-          <button key={item.id} onClick={() => { setPage(item.id); if (item.id === "history") fetchHistory() }} style={{
+          <button key={item.id} onClick={() => {
+            setPage(item.id)
+            if (item.id === "history") fetchHistory()
+          }} style={{
             display: "flex", alignItems: "center", gap: 10, width: "100%",
             padding: "11px 14px", marginBottom: 4, borderRadius: 10, border: "none",
             cursor: "pointer", fontWeight: 600, fontSize: 14, textAlign: "left",
-            background: page === item.id ? "linear-gradient(135deg, rgba(56,189,248,0.2), rgba(129,140,248,0.2))" : "transparent",
+            background: page === item.id
+              ? "linear-gradient(135deg, rgba(56,189,248,0.2), rgba(129,140,248,0.2))"
+              : "transparent",
             color: page === item.id ? "#38bdf8" : "#64748b",
             borderLeft: page === item.id ? "2px solid #38bdf8" : "2px solid transparent"
           }}>
@@ -242,10 +329,15 @@ export default function App() {
               {session.user.email}
             </p>
           </div>
-          <button onClick={() => supabase.auth.signOut()} style={{
-            width: "100%", padding: "9px", borderRadius: 10, border: "1px solid rgba(239,68,68,0.3)",
-            background: "rgba(239,68,68,0.1)", color: "#f87171", cursor: "pointer",
-            fontWeight: 600, fontSize: 13
+          <button onClick={() => {
+            localStorage.removeItem("smartrag_token")
+            localStorage.removeItem("smartrag_user")
+            setSession(null)
+          }} style={{
+            width: "100%", padding: "9px", borderRadius: 10,
+            border: "1px solid rgba(239,68,68,0.3)",
+            background: "rgba(239,68,68,0.1)", color: "#f87171",
+            cursor: "pointer", fontWeight: 600, fontSize: 13
           }}>
             Sign Out
           </button>
@@ -259,9 +351,10 @@ export default function App() {
         {page === "documents" && (
           <div>
             <h2 style={{ marginTop: 0, fontSize: 24, fontWeight: 700 }}>My Documents</h2>
-            <p style={{ color: "#64748b", marginBottom: 28 }}>Upload PDFs to index them for question answering.</p>
+            <p style={{ color: "#64748b", marginBottom: 28 }}>
+              Upload PDFs to index them for question answering.
+            </p>
 
-            {/* Upload Card */}
             <div style={{
               background: "rgba(255,255,255,0.04)", borderRadius: 16, padding: 28,
               border: "1px solid rgba(255,255,255,0.08)", marginBottom: 28
@@ -272,7 +365,8 @@ export default function App() {
                 padding: "28px 20px", textAlign: "center", cursor: "pointer", marginBottom: 16,
                 background: file ? "rgba(56,189,248,0.06)" : "transparent"
               }}>
-                <input type="file" accept=".pdf" onChange={e => setFile(e.target.files[0])} style={{ display: "none" }} />
+                <input type="file" accept=".pdf"
+                  onChange={e => setFile(e.target.files[0])} style={{ display: "none" }} />
                 <div style={{ fontSize: 28, marginBottom: 8 }}>{file ? "📄" : "☁️"}</div>
                 <div style={{ fontWeight: 600, color: file ? "#38bdf8" : "#475569", fontSize: 14 }}>
                   {file ? file.name : "Click to choose a PDF"}
@@ -280,8 +374,11 @@ export default function App() {
               </label>
               <button onClick={handleUpload} disabled={!file || uploading} style={{
                 width: "100%", padding: "12px", fontWeight: 700, fontSize: 14,
-                border: "none", borderRadius: 10, cursor: !file || uploading ? "not-allowed" : "pointer",
-                background: !file || uploading ? "rgba(255,255,255,0.05)" : "linear-gradient(135deg, #38bdf8, #818cf8)",
+                border: "none", borderRadius: 10,
+                cursor: !file || uploading ? "not-allowed" : "pointer",
+                background: !file || uploading
+                  ? "rgba(255,255,255,0.05)"
+                  : "linear-gradient(135deg, #38bdf8, #818cf8)",
                 color: !file || uploading ? "#475569" : "white"
               }}>
                 {uploading ? "⏳ Indexing..." : "🚀 Upload & Index"}
@@ -295,7 +392,9 @@ export default function App() {
                 }}>
                   {uploadStatus.success ? (
                     <div>
-                      <p style={{ margin: "0 0 10px", color: "#4ade80", fontWeight: 700 }}>✅ Indexed successfully!</p>
+                      <p style={{ margin: "0 0 10px", color: "#4ade80", fontWeight: 700 }}>
+                        ✅ Indexed successfully!
+                      </p>
                       <div style={{ display: "flex", gap: 12 }}>
                         {[
                           { label: "Doc ID", value: uploadStatus.data.doc_id },
@@ -307,7 +406,9 @@ export default function App() {
                             background: "rgba(255,255,255,0.04)", borderRadius: 8
                           }}>
                             <div style={{ fontSize: 11, color: "#475569" }}>{item.label}</div>
-                            <div style={{ fontWeight: 700, color: "#4ade80", fontSize: 14 }}>{item.value}</div>
+                            <div style={{ fontWeight: 700, color: "#4ade80", fontSize: 14 }}>
+                              {item.value}
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -319,7 +420,6 @@ export default function App() {
               )}
             </div>
 
-            {/* Documents List */}
             <h3 style={{ fontSize: 16, color: "#94a3b8", marginBottom: 14 }}>
               Uploaded Documents ({documents.length})
             </h3>
@@ -337,7 +437,8 @@ export default function App() {
                 {documents.map((doc, i) => (
                   <div key={i} style={{
                     padding: "16px 20px", borderRadius: 12,
-                    background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                    background: "rgba(255,255,255,0.04)",
+                    border: "1px solid rgba(255,255,255,0.08)",
                     display: "flex", justifyContent: "space-between", alignItems: "center"
                   }}>
                     <div>
@@ -348,13 +449,11 @@ export default function App() {
                         {doc.chunk_count} chunks · Uploaded {new Date(doc.created_at).toLocaleDateString()}
                       </p>
                     </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{
-                        fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 99,
-                        background: "rgba(56,189,248,0.1)", color: "#38bdf8"
-                      }}>
-                        Trust: {doc.trust_score}%
-                      </div>
+                    <div style={{
+                      fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 99,
+                      background: "rgba(56,189,248,0.1)", color: "#38bdf8"
+                    }}>
+                      Trust: {doc.trust_score}%
                     </div>
                   </div>
                 ))}
@@ -367,14 +466,18 @@ export default function App() {
         {page === "chat" && (
           <div>
             <h2 style={{ marginTop: 0, fontSize: 24, fontWeight: 700 }}>Chat</h2>
-            <p style={{ color: "#64748b", marginBottom: 24 }}>Select a document and ask a question.</p>
+            <p style={{ color: "#64748b", marginBottom: 24 }}>
+              Select a document and ask a question.
+            </p>
 
-            {/* Document Selector */}
             <div style={{
               background: "rgba(255,255,255,0.04)", borderRadius: 14, padding: 20,
               border: "1px solid rgba(255,255,255,0.08)", marginBottom: 20
             }}>
-              <label style={{ fontSize: 13, color: "#94a3b8", fontWeight: 600, display: "block", marginBottom: 10 }}>
+              <label style={{
+                fontSize: 13, color: "#94a3b8", fontWeight: 600,
+                display: "block", marginBottom: 10
+              }}>
                 Select Document to Query
               </label>
               {documents.length === 0 ? (
@@ -399,7 +502,6 @@ export default function App() {
               )}
             </div>
 
-            {/* Question Input */}
             <div style={{
               background: "rgba(255,255,255,0.04)", borderRadius: 14, padding: 20,
               border: "1px solid rgba(255,255,255,0.08)", marginBottom: 20
@@ -418,18 +520,27 @@ export default function App() {
                     color: "white", fontSize: 14, outline: "none"
                   }}
                 />
-                <button onClick={handleQuery} disabled={loading || !question.trim() || !selectedDoc} style={{
-                  padding: "12px 24px", fontWeight: 700, fontSize: 14,
-                  background: loading || !selectedDoc ? "rgba(255,255,255,0.05)" : "linear-gradient(135deg, #38bdf8, #818cf8)",
-                  color: loading || !selectedDoc ? "#475569" : "white",
-                  border: "none", borderRadius: 10, cursor: "pointer"
-                }}>
+                <button onClick={handleQuery}
+                  disabled={loading || !question.trim() || !selectedDoc} style={{
+                    padding: "12px 24px", fontWeight: 700, fontSize: 14,
+                    background: loading || !selectedDoc
+                      ? "rgba(255,255,255,0.05)"
+                      : "linear-gradient(135deg, #38bdf8, #818cf8)",
+                    color: loading || !selectedDoc ? "#475569" : "white",
+                    border: "none", borderRadius: 10, cursor: "pointer"
+                  }}>
                   {loading ? "⏳" : "Ask →"}
                 </button>
               </div>
             </div>
 
-            {/* Result */}
+            {loading && (
+              <div style={{ textAlign: "center", padding: 40, color: "#94a3b8" }}>
+                <div style={{ fontSize: 32, marginBottom: 12 }}>🔍</div>
+                Searching through your document...
+              </div>
+            )}
+
             {result && (
               <div style={{
                 background: "rgba(255,255,255,0.04)", borderRadius: 14, padding: 24,
@@ -457,8 +568,7 @@ export default function App() {
                     {result.sources.map((src, i) => (
                       <div key={i} style={{
                         marginBottom: 8, borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.08)",
-                        overflow: "hidden"
+                        border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden"
                       }}>
                         <div onClick={() => setExpandedSource(expandedSource === i ? null : i)}
                           style={{
@@ -470,7 +580,7 @@ export default function App() {
                             📄 {src.doc_id} · Chunk {src.chunk_index}
                           </span>
                           <span style={{ fontSize: 12, color: "#64748b" }}>
-                            Relevance: <strong style={{ color: "#38bdf8" }}>{src.relevance_score}</strong>
+                            Relevance: <strong style={{ color: "#38bdf8" }}>{src.relevance_score}%</strong>
                             &nbsp;· Trust: <strong style={{ color: "#4ade80" }}>{src.trust_score}%</strong>
                             &nbsp;{expandedSource === i ? "▲" : "▼"}
                           </span>
