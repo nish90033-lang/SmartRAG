@@ -1,87 +1,128 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef, useCallback } from "react"
 import axios from "axios"
+import "./App.css"
 
 const API = "http://localhost:8000"
 
 export default function App() {
-  const [session, setSession] = useState(null)
-  const [page, setPage] = useState("documents")
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
-  const [authMode, setAuthMode] = useState("login")
-  const [authError, setAuthError] = useState("")
+  const [session, setSession]         = useState(null)
+  const [page, setPage]               = useState("documents")
+
+  // Auth
+  const [email, setEmail]             = useState("")
+  const [password, setPassword]       = useState("")
+  const [authMode, setAuthMode]       = useState("login")
+  const [authError, setAuthError]     = useState("")
   const [authLoading, setAuthLoading] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
-  const [resetMode, setResetMode] = useState(false)
-  const [resetSent, setResetSent] = useState(false)
+  const [rememberMe, setRememberMe]   = useState(false)   // FIX #4: wired up
+  const [resetMode, setResetMode]     = useState(false)
+  const [resetSent, setResetSent]     = useState(false)
 
-  const [file, setFile] = useState(null)
-  const [uploading, setUploading] = useState(false)
+  // Documents
+  const [file, setFile]               = useState(null)
+  const [uploading, setUploading]     = useState(false)
   const [uploadStatus, setUploadStatus] = useState(null)
-  const [documents, setDocuments] = useState([])
-  const [selectedDoc, setSelectedDoc] = useState(null)
+  const [documents, setDocuments]     = useState([])
+  const [docsLoading, setDocsLoading] = useState(false)   // FIX #6: loading state
+  const [selectedDoc, setSelectedDoc] = useState("")
 
-  const [question, setQuestion] = useState("")
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState(null)
-  const [history, setHistory] = useState([])
-  const [expandedSource, setExpandedSource] = useState(null)
+  // Chat
+  const [question, setQuestion]       = useState("")
+  const [loading, setLoading]         = useState(false)
+  const [result, setResult]           = useState(null)
 
+  // History
+  const [history, setHistory]         = useState([])
+  const [histLoading, setHistLoading] = useState(false)   // FIX #6: loading state
+
+  // FIX #3: ref to reset file input DOM element
+  const fileInputRef = useRef(null)
+
+  // ── Session bootstrap ─────────────────────────────────────────────────────
   useEffect(() => {
-    const token = localStorage.getItem("smartrag_token")
-    const user = localStorage.getItem("smartrag_user")
+    // FIX #2: read from whichever store was used at login
+    const token = sessionStorage.getItem("smartrag_token") || localStorage.getItem("smartrag_token")
+    const user  = sessionStorage.getItem("smartrag_user")  || localStorage.getItem("smartrag_user")
     if (token && user) {
-      setSession({ access_token: token, user: JSON.parse(user) })
+      try {
+        setSession({ access_token: token, user: JSON.parse(user) })
+      } catch {
+        // FIX #9 (partial): guard against corrupt localStorage value crashing the app
+        sessionStorage.removeItem("smartrag_token")
+        sessionStorage.removeItem("smartrag_user")
+        localStorage.removeItem("smartrag_token")
+        localStorage.removeItem("smartrag_user")
+      }
     }
   }, [])
 
+  // FIX #3 (useCallback): stable reference so the useEffect dep array is correct
+  const fetchDocuments = useCallback(async () => {
+    setDocsLoading(true)
+    try {
+      const res = await axios.get(`${API}/documents`, { headers: authHeaders() })
+      setDocuments(res.data.documents || [])
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setDocsLoading(false)
+    }
+  }, [session]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // FIX #3 (useEffect dep): include fetchDocuments in dep array
   useEffect(() => {
     if (session) fetchDocuments()
-  }, [session])
+  }, [session, fetchDocuments])
 
   const authHeaders = () => ({
     Authorization: `Bearer ${session?.access_token}`
   })
 
+  // ── Auth ──────────────────────────────────────────────────────────────────
   async function handleAuth() {
     setAuthLoading(true)
     setAuthError("")
     try {
       const endpoint = authMode === "login" ? "/auth/login" : "/auth/signup"
       const res = await axios.post(`${API}${endpoint}`, { email, password })
-      localStorage.setItem("smartrag_token", res.data.token)
-      localStorage.setItem("smartrag_user", JSON.stringify(res.data.user))
+
+      // FIX #2 + FIX #4: use sessionStorage by default; localStorage only if "remember me"
+      const store = rememberMe ? localStorage : sessionStorage
+      store.setItem("smartrag_token", res.data.token)
+      store.setItem("smartrag_user",  JSON.stringify(res.data.user))
+
       setSession({ access_token: res.data.token, user: res.data.user })
     } catch (err) {
-      setAuthError(err.response?.data?.detail || "Something went wrong.")
+      setAuthError(err.response?.data?.detail || "Authentication failed. Please try again.")
+    } finally {
+      setAuthLoading(false)
     }
-    setAuthLoading(false)
   }
 
+  // FIX #1: handleReset actually calls the API
   async function handleReset() {
     setAuthLoading(true)
-    setResetSent(true)
-    setAuthLoading(false)
-  }
-
-  async function fetchDocuments() {
+    setAuthError("")
     try {
-      const res = await axios.get(`${API}/documents`, { headers: authHeaders() })
-      setDocuments(res.data.documents || [])
-    } catch (e) {
-      console.error(e)
+      await axios.post(`${API}/auth/reset`, { email })
+      setResetSent(true)
+    } catch (err) {
+      setAuthError(err.response?.data?.detail || "Could not send reset email. Please try again.")
+    } finally {
+      setAuthLoading(false)
     }
   }
 
-  async function fetchHistory() {
-    try {
-      const res = await axios.get(`${API}/history`, { headers: authHeaders() })
-      setHistory(res.data.history || [])
-    } catch (e) {
-      console.error(e)
-    }
+  function handleSignOut() {
+    sessionStorage.removeItem("smartrag_token")
+    sessionStorage.removeItem("smartrag_user")
+    localStorage.removeItem("smartrag_token")
+    localStorage.removeItem("smartrag_user")
+    setSession(null)
   }
 
+  // ── Documents ─────────────────────────────────────────────────────────────
   async function handleUpload() {
     if (!file) return
     setUploading(true)
@@ -91,13 +132,18 @@ export default function App() {
     try {
       const res = await axios.post(`${API}/upload`, formData, { headers: authHeaders() })
       setUploadStatus({ success: true, data: res.data })
+      // FIX #3: clear both state and DOM input after successful upload
+      setFile(null)
+      if (fileInputRef.current) fileInputRef.current.value = ""
       fetchDocuments()
     } catch (err) {
       setUploadStatus({ success: false, message: err.response?.data?.detail || "Upload failed." })
+    } finally {
+      setUploading(false)
     }
-    setUploading(false)
   }
 
+  // ── Chat ──────────────────────────────────────────────────────────────────
   async function handleQuery() {
     if (!question.trim() || !selectedDoc) return
     setLoading(true)
@@ -106,167 +152,138 @@ export default function App() {
       const res = await axios.post(`${API}/query`, {
         question,
         use_llm: true,
-        doc_id: selectedDoc
+        doc_id: String(selectedDoc)  // FIX #5: always send as string
       }, { headers: authHeaders() })
       setResult(res.data)
     } catch (err) {
-      setResult({ answer: "Something went wrong.", answerable: false, sources: [] })
+      setResult({ answer: "Something went wrong. Please try again.", answerable: false, sources: [] })
+    } finally {
+      setLoading(false)
+      setQuestion("")
     }
-    setLoading(false)
-    setQuestion("")
   }
 
-  // Auth Screen
+  // ── History ───────────────────────────────────────────────────────────────
+  async function fetchHistory() {
+    setHistLoading(true)
+    try {
+      const res = await axios.get(`${API}/history`, { headers: authHeaders() })
+      setHistory(res.data.history || [])
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setHistLoading(false)
+    }
+  }
+
+  // ── Auth Screen ───────────────────────────────────────────────────────────
   if (!session) {
     return (
-      <div style={{
-        minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
-        background: "linear-gradient(135deg, #0f0c29, #302b63, #24243e)",
-        fontFamily: "'Segoe UI', system-ui, sans-serif"
-      }}>
-        <div style={{
-          width: 420, background: "rgba(255,255,255,0.05)", borderRadius: 20,
-          padding: 40, border: "1px solid rgba(255,255,255,0.1)", backdropFilter: "blur(10px)"
-        }}>
-          <div style={{ textAlign: "center", marginBottom: 32 }}>
-            <div style={{ fontSize: 48, marginBottom: 8 }}>🧠</div>
-            <h1 style={{
-              margin: 0, fontSize: 32, fontWeight: 800,
-              background: "linear-gradient(90deg, #38bdf8, #818cf8)",
-              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
-            }}>SmartRAG</h1>
-            <p style={{ color: "#94a3b8", marginTop: 8, fontSize: 14 }}>
-              AI-powered document intelligence
-            </p>
+      <div className="auth-page">
+        <div className="auth-panel">
+
+          <div className="auth-brand">
+            <svg className="auth-logo" viewBox="0 0 24 24" fill="none">
+              <path d="M12 2L2 7l10 5 10-5-10-5Z" stroke="var(--accent)" strokeWidth="1.75" strokeLinejoin="round"/>
+              <path d="M2 17l10 5 10-5"            stroke="var(--accent)" strokeWidth="1.75" strokeLinejoin="round"/>
+              <path d="M2 12l10 5 10-5"            stroke="var(--accent)" strokeWidth="1.75" strokeLinejoin="round"/>
+            </svg>
+            <h1 className="auth-wordmark">SmartRAG</h1>
+            <p className="auth-tagline">Secure document intelligence</p>
           </div>
 
           {!resetMode ? (
             <>
-              <div style={{
-                display: "flex", marginBottom: 24,
-                background: "rgba(255,255,255,0.05)", borderRadius: 10, padding: 4
-              }}>
-                {["login", "signup"].map(mode => (
-                  <button key={mode} onClick={() => setAuthMode(mode)} style={{
-                    flex: 1, padding: "8px", border: "none", borderRadius: 8, cursor: "pointer",
-                    fontWeight: 600, fontSize: 14,
-                    background: authMode === mode ? "linear-gradient(135deg, #38bdf8, #818cf8)" : "transparent",
-                    color: authMode === mode ? "white" : "#94a3b8"
-                  }}>
-                    {mode === "login" ? "Sign In" : "Sign Up"}
-                  </button>
-                ))}
+              <div className="tab-row">
+                <button className={`tab-btn ${authMode === "login"  ? "active" : ""}`} onClick={() => { setAuthMode("login");  setAuthError("") }}>Sign In</button>
+                <button className={`tab-btn ${authMode === "signup" ? "active" : ""}`} onClick={() => { setAuthMode("signup"); setAuthError("") }}>Create Account</button>
               </div>
 
-              <input
-                type="email" placeholder="Email" value={email}
-                onChange={e => setEmail(e.target.value)}
-                style={{
-                  width: "100%", padding: "12px 16px", marginBottom: 12, borderRadius: 10,
-                  border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)",
-                  color: "white", fontSize: 14, outline: "none", boxSizing: "border-box"
-                }}
-              />
-
-              <div style={{ position: "relative", marginBottom: 20 }}>
+              <div className="field-group">
+                <label className="field-label">Email address</label>
                 <input
-                  type={showPassword ? "text" : "password"}
-                  placeholder="Password" value={password}
-                  onChange={e => setPassword(e.target.value)}
+                  type="email"
+                  className="field-input"
+                  value={email}
+                  autoComplete="email"
+                  onChange={e => setEmail(e.target.value)}
                   onKeyDown={e => e.key === "Enter" && handleAuth()}
-                  style={{
-                    width: "100%", padding: "12px 16px", paddingRight: 48, borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)",
-                    color: "white", fontSize: 14, outline: "none", boxSizing: "border-box"
-                  }}
                 />
-                <button onClick={() => setShowPassword(!showPassword)} style={{
-                  position: "absolute", right: 14, top: "50%", transform: "translateY(-50%)",
-                  background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "#64748b"
-                }}>
-                  {showPassword ? "🙈" : "👁️"}
-                </button>
               </div>
 
-              {authError && (
-                <div style={{
-                  marginBottom: 16, padding: 12, borderRadius: 8, fontSize: 13,
-                  background: "rgba(239,68,68,0.1)", color: "#f87171",
-                  border: "1px solid rgba(239,68,68,0.3)"
-                }}>
-                  {authError}
+              <div className="field-group">
+                <label className="field-label">Password</label>
+                <div className="pw-wrap">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    className="field-input"
+                    value={password}
+                    autoComplete={authMode === "login" ? "current-password" : "new-password"}
+                    onChange={e => setPassword(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && handleAuth()}
+                  />
+                  {/* FIX #8: toggle sits inside pw-wrap, not auth-input, so centering is correct */}
+                  <button type="button" className="pw-toggle" onClick={() => setShowPassword(v => !v)} aria-label={showPassword ? "Hide password" : "Show password"}>
+                    {showPassword ? (
+                      <svg viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round"/><path d="M10.58 10.58a2 2 0 002.83 2.83" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round"/><path d="M9.36 5.37A9.8 9.8 0 0112 5c7 0 11 7 11 7a18.6 18.6 0 01-2.64 3.63M6.64 6.64A18.6 18.6 0 001 12s4 7 11 7a9.8 9.8 0 005.64-1.77" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round"/></svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" fill="none"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12Z" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.75"/></svg>
+                    )}
+                  </button>
                 </div>
-              )}
+              </div>
 
-              <button onClick={handleAuth} disabled={authLoading} style={{
-                width: "100%", padding: "13px", fontWeight: 700, fontSize: 15,
-                background: "linear-gradient(135deg, #38bdf8, #818cf8)",
-                color: "white", border: "none", borderRadius: 10, cursor: "pointer",
-                boxShadow: "0 4px 20px rgba(56,189,248,0.3)", marginBottom: 12
-              }}>
-                {authLoading ? "Please wait..." : authMode === "login" ? "Sign In →" : "Create Account →"}
+              {/* FIX #4: remember me is fully wired */}
+              <label className="checkbox-row">
+                <input type="checkbox" className="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} />
+                <span className="checkbox-label">Remember me for 30 days</span>
+              </label>
+
+              {authError && <div className="auth-error" role="alert">{authError}</div>}
+
+              <button className="primary-btn full-width" onClick={handleAuth} disabled={authLoading || !email || !password}>
+                {authLoading ? <span className="spinner" /> : authMode === "login" ? "Sign In" : "Create Account"}
               </button>
 
               {authMode === "login" && (
-                <button onClick={() => setResetMode(true)} style={{
-                  width: "100%", padding: "10px", fontWeight: 600, fontSize: 13,
-                  background: "transparent", color: "#64748b", border: "none",
-                  cursor: "pointer", textDecoration: "underline"
-                }}>
-                  Forgot password?
+                <button className="link-btn" onClick={() => { setResetMode(true); setAuthError("") }}>
+                  Forgot your password?
                 </button>
               )}
             </>
           ) : (
             <>
-              <div style={{ textAlign: "center", marginBottom: 24 }}>
-                <div style={{ fontSize: 32, marginBottom: 8 }}>🔐</div>
-                <h3 style={{ margin: 0, color: "white" }}>Reset Password</h3>
+              <div className="reset-header">
+                <h2 className="reset-title">Reset password</h2>
+                <p className="reset-sub">We'll send a reset link to your email address.</p>
               </div>
 
-              {resetSent ? (
-                <div style={{
-                  padding: 16, borderRadius: 10, marginBottom: 16,
-                  background: "rgba(56,189,248,0.1)", color: "#38bdf8",
-                  border: "1px solid rgba(56,189,248,0.3)", fontSize: 14, textAlign: "center"
-                }}>
-                  <p style={{ margin: "0 0 8px", fontWeight: 700 }}>Password Reset Info</p>
-                  <p style={{ margin: 0, fontSize: 13, color: "#94a3b8" }}>
-                    This app uses local authentication. Please create a new account with a different email
-                    or contact the admin to manually reset your password.
-                  </p>
-                </div>
-              ) : (
+              {!resetSent ? (
                 <>
-                  <p style={{ color: "#94a3b8", fontSize: 14, marginBottom: 20 }}>
-                    Enter your email address below.
-                  </p>
-                  <input
-                    type="email" placeholder="Email" value={email}
-                    onChange={e => setEmail(e.target.value)}
-                    style={{
-                      width: "100%", padding: "12px 16px", marginBottom: 16, borderRadius: 10,
-                      border: "1px solid rgba(255,255,255,0.15)", background: "rgba(255,255,255,0.08)",
-                      color: "white", fontSize: 14, outline: "none", boxSizing: "border-box"
-                    }}
-                  />
-                  <button onClick={handleReset} disabled={authLoading} style={{
-                    width: "100%", padding: "13px", fontWeight: 700, fontSize: 15,
-                    background: "linear-gradient(135deg, #38bdf8, #818cf8)",
-                    color: "white", border: "none", borderRadius: 10, cursor: "pointer",
-                    marginBottom: 12
-                  }}>
-                    Submit
+                  <div className="field-group">
+                    <label className="field-label">Email address</label>
+                    <input
+                      type="email"
+                      className="field-input"
+                      value={email}
+                      onChange={e => setEmail(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && handleReset()}
+                    />
+                  </div>
+                  {authError && <div className="auth-error" role="alert">{authError}</div>}
+                  {/* FIX #1: button calls real API */}
+                  <button className="primary-btn full-width" onClick={handleReset} disabled={authLoading || !email}>
+                    {authLoading ? <span className="spinner" /> : "Send reset link"}
                   </button>
                 </>
+              ) : (
+                <div className="info-box">
+                  Check your inbox — a reset link has been sent to <strong>{email}</strong>.
+                </div>
               )}
 
-              <button onClick={() => { setResetMode(false); setResetSent(false) }} style={{
-                width: "100%", padding: "10px", fontWeight: 600, fontSize: 13,
-                background: "transparent", color: "#64748b", border: "none",
-                cursor: "pointer", textDecoration: "underline"
-              }}>
-                ← Back to Sign In
+              <button className="link-btn" onClick={() => { setResetMode(false); setResetSent(false); setAuthError("") }}>
+                ← Back to sign in
               </button>
             </>
           )}
@@ -275,367 +292,219 @@ export default function App() {
     )
   }
 
-  // Main App
+  // ── Main App ──────────────────────────────────────────────────────────────
   return (
-    <div style={{
-      minHeight: "100vh", display: "flex",
-      background: "linear-gradient(135deg, #0f0c29, #302b63, #24243e)",
-      fontFamily: "'Segoe UI', system-ui, sans-serif", color: "white"
-    }}>
+    <div className="app-layout">
+
       {/* Sidebar */}
-      <div style={{
-        width: 240, background: "rgba(0,0,0,0.3)", borderRight: "1px solid rgba(255,255,255,0.08)",
-        padding: "24px 16px", display: "flex", flexDirection: "column"
-      }}>
-        <div style={{ marginBottom: 32 }}>
-          <div style={{ fontSize: 24, marginBottom: 4 }}>🧠</div>
-          <h2 style={{
-            margin: 0, fontSize: 20, fontWeight: 800,
-            background: "linear-gradient(90deg, #38bdf8, #818cf8)",
-            WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
-          }}>SmartRAG</h2>
-          <p style={{ margin: "4px 0 0", fontSize: 11, color: "#475569" }}>Document Intelligence</p>
+      <aside className="sidebar">
+        <div className="sidebar-brand">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M12 2L2 7l10 5 10-5-10-5Z" stroke="var(--accent)" strokeWidth="1.75" strokeLinejoin="round"/>
+            <path d="M2 17l10 5 10-5"            stroke="var(--accent)" strokeWidth="1.75" strokeLinejoin="round"/>
+            <path d="M2 12l10 5 10-5"            stroke="var(--accent)" strokeWidth="1.75" strokeLinejoin="round"/>
+          </svg>
+          <span>SmartRAG</span>
         </div>
 
-        {[
-          { id: "documents", icon: "📄", label: "Documents" },
-          { id: "chat", icon: "💬", label: "Chat" },
-          { id: "history", icon: "🕘", label: "History" },
-        ].map(item => (
-          <button key={item.id} onClick={() => {
-            setPage(item.id)
-            if (item.id === "history") fetchHistory()
-          }} style={{
-            display: "flex", alignItems: "center", gap: 10, width: "100%",
-            padding: "11px 14px", marginBottom: 4, borderRadius: 10, border: "none",
-            cursor: "pointer", fontWeight: 600, fontSize: 14, textAlign: "left",
-            background: page === item.id
-              ? "linear-gradient(135deg, rgba(56,189,248,0.2), rgba(129,140,248,0.2))"
-              : "transparent",
-            color: page === item.id ? "#38bdf8" : "#64748b",
-            borderLeft: page === item.id ? "2px solid #38bdf8" : "2px solid transparent"
-          }}>
-            <span>{item.icon}</span> {item.label}
-          </button>
-        ))}
+        <nav className="sidebar-nav">
+          {[
+            { id: "documents", label: "Documents" },
+            { id: "chat",      label: "Chat"      },
+            { id: "history",   label: "History"   },
+          ].map(item => (
+            <button
+              key={item.id}
+              className={`nav-link ${page === item.id ? "active" : ""}`}
+              onClick={() => {
+                setPage(item.id)
+                if (item.id === "history") fetchHistory()
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
 
-        <div style={{ marginTop: "auto" }}>
-          <div style={{
-            padding: "10px 14px", borderRadius: 10,
-            background: "rgba(255,255,255,0.05)", marginBottom: 8
-          }}>
-            <p style={{ margin: 0, fontSize: 11, color: "#475569" }}>Signed in as</p>
-            <p style={{ margin: "2px 0 0", fontSize: 12, color: "#94a3b8", wordBreak: "break-all" }}>
-              {session.user.email}
-            </p>
+        <div className="sidebar-footer">
+          <div className="user-pill">
+            <span className="user-avatar">{session.user.email[0].toUpperCase()}</span>
+            <span className="user-email">{session.user.email}</span>
           </div>
-          <button onClick={() => {
-            localStorage.removeItem("smartrag_token")
-            localStorage.removeItem("smartrag_user")
-            setSession(null)
-          }} style={{
-            width: "100%", padding: "9px", borderRadius: 10,
-            border: "1px solid rgba(239,68,68,0.3)",
-            background: "rgba(239,68,68,0.1)", color: "#f87171",
-            cursor: "pointer", fontWeight: 600, fontSize: 13
-          }}>
-            Sign Out
-          </button>
+          <button className="signout-btn" onClick={handleSignOut}>Sign out</button>
         </div>
-      </div>
+      </aside>
 
-      {/* Main Content */}
-      <div style={{ flex: 1, padding: 32, overflowY: "auto" }}>
+      {/* Main content */}
+      <main className="main-content">
 
-        {/* Documents Page */}
+        {/* ── Documents ── */}
         {page === "documents" && (
-          <div>
-            <h2 style={{ marginTop: 0, fontSize: 24, fontWeight: 700 }}>My Documents</h2>
-            <p style={{ color: "#64748b", marginBottom: 28 }}>
-              Upload PDFs to index them for question answering.
-            </p>
+          <section>
+            <div className="page-header">
+              <h2 className="page-title">Documents</h2>
+              <p className="page-sub">Upload PDFs to index and query.</p>
+            </div>
 
-            <div style={{
-              background: "rgba(255,255,255,0.04)", borderRadius: 16, padding: 28,
-              border: "1px solid rgba(255,255,255,0.08)", marginBottom: 28
-            }}>
-              <h3 style={{ marginTop: 0, fontSize: 16, color: "#94a3b8" }}>Upload New Document</h3>
-              <label style={{
-                display: "block", border: "2px dashed rgba(56,189,248,0.3)", borderRadius: 12,
-                padding: "28px 20px", textAlign: "center", cursor: "pointer", marginBottom: 16,
-                background: file ? "rgba(56,189,248,0.06)" : "transparent"
-              }}>
-                <input type="file" accept=".pdf"
-                  onChange={e => setFile(e.target.files[0])} style={{ display: "none" }} />
-                <div style={{ fontSize: 28, marginBottom: 8 }}>{file ? "📄" : "☁️"}</div>
-                <div style={{ fontWeight: 600, color: file ? "#38bdf8" : "#475569", fontSize: 14 }}>
-                  {file ? file.name : "Click to choose a PDF"}
-                </div>
-              </label>
-              <button onClick={handleUpload} disabled={!file || uploading} style={{
-                width: "100%", padding: "12px", fontWeight: 700, fontSize: 14,
-                border: "none", borderRadius: 10,
-                cursor: !file || uploading ? "not-allowed" : "pointer",
-                background: !file || uploading
-                  ? "rgba(255,255,255,0.05)"
-                  : "linear-gradient(135deg, #38bdf8, #818cf8)",
-                color: !file || uploading ? "#475569" : "white"
-              }}>
-                {uploading ? "⏳ Indexing..." : "🚀 Upload & Index"}
-              </button>
+            <div className="card">
+              <p className="card-label">Upload a PDF</p>
+              <div className="upload-row">
+                {/* FIX #3: ref attached */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf"
+                  className="file-input"
+                  onChange={e => setFile(e.target.files[0] || null)}
+                />
+                <button
+                  className="primary-btn"
+                  onClick={handleUpload}
+                  disabled={!file || uploading}
+                >
+                  {uploading ? <span className="spinner" /> : "Upload & Index"}
+                </button>
+              </div>
 
               {uploadStatus && (
-                <div style={{
-                  marginTop: 16, padding: 16, borderRadius: 10,
-                  background: uploadStatus.success ? "rgba(34,197,94,0.08)" : "rgba(239,68,68,0.08)",
-                  border: `1px solid ${uploadStatus.success ? "rgba(34,197,94,0.2)" : "rgba(239,68,68,0.2)"}`
-                }}>
-                  {uploadStatus.success ? (
-                    <div>
-                      <p style={{ margin: "0 0 10px", color: "#4ade80", fontWeight: 700 }}>
-                        ✅ Indexed successfully!
-                      </p>
-                      <div style={{ display: "flex", gap: 12 }}>
-                        {[
-                          { label: "Doc ID", value: uploadStatus.data.doc_id },
-                          { label: "Chunks", value: uploadStatus.data.chunk_count },
-                          { label: "Trust", value: `${uploadStatus.data.trust_score}%` }
-                        ].map(item => (
-                          <div key={item.label} style={{
-                            flex: 1, textAlign: "center", padding: "8px",
-                            background: "rgba(255,255,255,0.04)", borderRadius: 8
-                          }}>
-                            <div style={{ fontSize: 11, color: "#475569" }}>{item.label}</div>
-                            <div style={{ fontWeight: 700, color: "#4ade80", fontSize: 14 }}>
-                              {item.value}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <p style={{ margin: 0, color: "#f87171" }}>❌ {uploadStatus.message}</p>
-                  )}
+                <div className={`status-strip ${uploadStatus.success ? "success" : "error"}`}>
+                  {uploadStatus.success ? "Document indexed successfully." : uploadStatus.message}
                 </div>
               )}
             </div>
 
-            <h3 style={{ fontSize: 16, color: "#94a3b8", marginBottom: 14 }}>
-              Uploaded Documents ({documents.length})
-            </h3>
-            {documents.length === 0 ? (
-              <div style={{
-                textAlign: "center", padding: 40, borderRadius: 16,
-                background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
-                color: "#475569"
-              }}>
-                <div style={{ fontSize: 32, marginBottom: 10 }}>📭</div>
-                No documents yet. Upload your first PDF above.
-              </div>
+            {/* FIX #6: loading + empty states */}
+            {docsLoading ? (
+              <div className="state-placeholder">Loading documents…</div>
+            ) : documents.length === 0 ? (
+              <div className="state-placeholder">No documents yet. Upload a PDF above to get started.</div>
             ) : (
-              <div style={{ display: "grid", gap: 10 }}>
-                {documents.map((doc, i) => (
-                  <div key={i} style={{
-                    padding: "16px 20px", borderRadius: 12,
-                    background: "rgba(255,255,255,0.04)",
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    display: "flex", justifyContent: "space-between", alignItems: "center"
-                  }}>
+              <div className="doc-list">
+                {/* FIX #5: key uses doc.doc_id not index */}
+                {documents.map(doc => (
+                  <div key={doc.doc_id} className="doc-row">
                     <div>
-                      <p style={{ margin: 0, fontWeight: 600, fontSize: 14, color: "#e2e8f0" }}>
-                        📄 {doc.filename}
-                      </p>
-                      <p style={{ margin: "4px 0 0", fontSize: 12, color: "#475569" }}>
-                        {doc.chunk_count} chunks · Uploaded {new Date(doc.created_at).toLocaleDateString()}
-                      </p>
+                      <div className="doc-name">{doc.filename}</div>
+                      <div className="doc-meta">
+                        {doc.chunk_count} chunks · {new Date(doc.created_at).toLocaleDateString()}
+                      </div>
                     </div>
-                    <div style={{
-                      fontSize: 12, fontWeight: 700, padding: "3px 10px", borderRadius: 99,
-                      background: "rgba(56,189,248,0.1)", color: "#38bdf8"
-                    }}>
-                      Trust: {doc.trust_score}%
-                    </div>
+                    <span className="badge">{doc.trust_score}% trust</span>
                   </div>
                 ))}
               </div>
             )}
-          </div>
+          </section>
         )}
 
-        {/* Chat Page */}
+        {/* ── Chat ── */}
         {page === "chat" && (
-          <div>
-            <h2 style={{ marginTop: 0, fontSize: 24, fontWeight: 700 }}>Chat</h2>
-            <p style={{ color: "#64748b", marginBottom: 24 }}>
-              Select a document and ask a question.
-            </p>
+          <section>
+            <div className="page-header">
+              <h2 className="page-title">Chat</h2>
+              <p className="page-sub">Ask questions about your indexed documents.</p>
+            </div>
 
-            <div style={{
-              background: "rgba(255,255,255,0.04)", borderRadius: 14, padding: 20,
-              border: "1px solid rgba(255,255,255,0.08)", marginBottom: 20
-            }}>
-              <label style={{
-                fontSize: 13, color: "#94a3b8", fontWeight: 600,
-                display: "block", marginBottom: 10
-              }}>
-                Select Document to Query
-              </label>
-              {documents.length === 0 ? (
-                <p style={{ color: "#475569", fontSize: 13, margin: 0 }}>
-                  No documents uploaded yet. Go to Documents tab first.
-                </p>
-              ) : (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {documents.map((doc, i) => (
-                    <button key={i} onClick={() => setSelectedDoc(doc.doc_id)} style={{
-                      padding: "8px 16px", borderRadius: 8, border: "none", cursor: "pointer",
-                      fontWeight: 600, fontSize: 13,
-                      background: selectedDoc === doc.doc_id
-                        ? "linear-gradient(135deg, #38bdf8, #818cf8)"
-                        : "rgba(255,255,255,0.07)",
-                      color: selectedDoc === doc.doc_id ? "white" : "#94a3b8"
-                    }}>
-                      📄 {doc.filename}
-                    </button>
+            <div className="card">
+              <div className="field-group">
+                <label className="field-label">Document</label>
+                {/* FIX #10: select has option colors + focus style */}
+                <select
+                  className="field-select"
+                  value={selectedDoc}
+                  onChange={e => setSelectedDoc(String(e.target.value))}  // FIX #5: coerce to string
+                >
+                  <option value="">Select a document…</option>
+                  {/* FIX #5: key uses doc.doc_id */}
+                  {documents.map(doc => (
+                    <option key={doc.doc_id} value={String(doc.doc_id)}>
+                      {doc.filename}
+                    </option>
                   ))}
+                </select>
+              </div>
+
+              <div className="field-group">
+                <label className="field-label">Question</label>
+                <div className="chat-row">
+                  <input
+                    className="field-input"
+                    value={question}
+                    onChange={e => setQuestion(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && handleQuery()}
+                    placeholder="Ask anything about the selected document…"
+                  />
+                  <button
+                    className="primary-btn"
+                    onClick={handleQuery}
+                    disabled={!question.trim() || !selectedDoc || loading}
+                  >
+                    {loading ? <span className="spinner" /> : "Ask"}
+                  </button>
                 </div>
-              )}
-            </div>
-
-            <div style={{
-              background: "rgba(255,255,255,0.04)", borderRadius: 14, padding: 20,
-              border: "1px solid rgba(255,255,255,0.08)", marginBottom: 20
-            }}>
-              <div style={{ display: "flex", gap: 10 }}>
-                <input
-                  value={question}
-                  onChange={e => setQuestion(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && handleQuery()}
-                  placeholder={selectedDoc ? "Ask a question about this document..." : "Select a document first..."}
-                  disabled={!selectedDoc}
-                  style={{
-                    flex: 1, padding: "12px 16px", borderRadius: 10,
-                    border: "1px solid rgba(255,255,255,0.12)",
-                    background: "rgba(255,255,255,0.06)",
-                    color: "white", fontSize: 14, outline: "none"
-                  }}
-                />
-                <button onClick={handleQuery}
-                  disabled={loading || !question.trim() || !selectedDoc} style={{
-                    padding: "12px 24px", fontWeight: 700, fontSize: 14,
-                    background: loading || !selectedDoc
-                      ? "rgba(255,255,255,0.05)"
-                      : "linear-gradient(135deg, #38bdf8, #818cf8)",
-                    color: loading || !selectedDoc ? "#475569" : "white",
-                    border: "none", borderRadius: 10, cursor: "pointer"
-                  }}>
-                  {loading ? "⏳" : "Ask →"}
-                </button>
               </div>
             </div>
-
-            {loading && (
-              <div style={{ textAlign: "center", padding: 40, color: "#94a3b8" }}>
-                <div style={{ fontSize: 32, marginBottom: 12 }}>🔍</div>
-                Searching through your document...
-              </div>
-            )}
 
             {result && (
-              <div style={{
-                background: "rgba(255,255,255,0.04)", borderRadius: 14, padding: 24,
-                border: "1px solid rgba(255,255,255,0.08)"
-              }}>
-                <span style={{
-                  display: "inline-block", marginBottom: 16, fontSize: 12, fontWeight: 700,
-                  padding: "3px 12px", borderRadius: 99,
-                  background: result.answerable ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)",
-                  color: result.answerable ? "#4ade80" : "#f87171",
-                  border: `1px solid ${result.answerable ? "rgba(34,197,94,0.2)" : "rgba(239,68,68,0.2)"}`
-                }}>
-                  {result.answerable ? "✅ Answered" : "❌ Unanswerable"}
+              <div className="card result-card">
+                <span className={`badge ${result.answerable ? "success" : "muted"}`}>
+                  {result.answerable ? "Answered" : "Unanswerable"}
                 </span>
+                <p className="answer-text">{result.answer}</p>
 
-                <p style={{ lineHeight: 1.8, fontSize: 15, color: "#e2e8f0", marginBottom: 24 }}>
-                  {result.answer}
-                </p>
-
+                {/* FIX #12: sources section now has styles in CSS */}
                 {result.sources?.length > 0 && (
-                  <>
-                    <p style={{ fontWeight: 700, color: "#818cf8", fontSize: 13, marginBottom: 10 }}>
-                      📚 {result.sources.length} Sources Used
-                    </p>
+                  <div className="sources">
+                    <p className="sources-label">Sources</p>
                     {result.sources.map((src, i) => (
-                      <div key={i} style={{
-                        marginBottom: 8, borderRadius: 10,
-                        border: "1px solid rgba(255,255,255,0.08)", overflow: "hidden"
-                      }}>
-                        <div onClick={() => setExpandedSource(expandedSource === i ? null : i)}
-                          style={{
-                            padding: "10px 16px", cursor: "pointer",
-                            display: "flex", justifyContent: "space-between", alignItems: "center",
-                            background: "rgba(255,255,255,0.03)"
-                          }}>
-                          <span style={{ fontWeight: 600, fontSize: 13, color: "#c084fc" }}>
-                            📄 {src.doc_id} · Chunk {src.chunk_index}
-                          </span>
-                          <span style={{ fontSize: 12, color: "#64748b" }}>
-                            Relevance: <strong style={{ color: "#38bdf8" }}>{src.relevance_score}%</strong>
-                            &nbsp;· Trust: <strong style={{ color: "#4ade80" }}>{src.trust_score}%</strong>
-                            &nbsp;{expandedSource === i ? "▲" : "▼"}
-                          </span>
+                      // FIX #5: stable key combining doc_id + chunk_index
+                      <div key={`${src.doc_id}-${src.chunk_index}`} className="source-card">
+                        <div className="source-header">
+                          <span>{src.doc_id}</span>
+                          <span>Chunk {src.chunk_index}</span>
                         </div>
-                        {expandedSource === i && (
-                          <div style={{
-                            padding: "12px 16px", fontSize: 13, color: "#94a3b8",
-                            lineHeight: 1.7, borderTop: "1px solid rgba(255,255,255,0.06)"
-                          }}>
-                            {src.excerpt}
-                          </div>
-                        )}
+                        <div className="source-meta">
+                          Relevance {src.relevance_score}% · Trust {src.trust_score}%
+                        </div>
+                        <p className="source-excerpt">{src.excerpt}</p>
                       </div>
                     ))}
-                  </>
+                  </div>
                 )}
               </div>
             )}
-          </div>
+          </section>
         )}
 
-        {/* History Page */}
+        {/* ── History ── */}
         {page === "history" && (
-          <div>
-            <h2 style={{ marginTop: 0, fontSize: 24, fontWeight: 700 }}>Chat History</h2>
-            {history.length === 0 ? (
-              <div style={{
-                textAlign: "center", padding: 60, borderRadius: 16,
-                background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
-                color: "#475569"
-              }}>
-                <div style={{ fontSize: 36, marginBottom: 12 }}>💬</div>
-                No chat history yet.
-              </div>
+          <section>
+            <div className="page-header">
+              <h2 className="page-title">History</h2>
+              <p className="page-sub">Your past queries and answers.</p>
+            </div>
+
+            {/* FIX #6: loading + empty states */}
+            {histLoading ? (
+              <div className="state-placeholder">Loading history…</div>
+            ) : history.length === 0 ? (
+              <div className="state-placeholder">No history yet. Ask a question in Chat to get started.</div>
             ) : (
-              history.map((item, i) => (
-                <div key={i} style={{
-                  marginBottom: 12, background: "rgba(255,255,255,0.04)", borderRadius: 12,
-                  padding: 20, border: "1px solid rgba(255,255,255,0.08)"
-                }}>
-                  <p style={{ margin: "0 0 8px", fontWeight: 700, color: "#38bdf8", fontSize: 14 }}>
-                    Q: {item.question}
-                  </p>
-                  <p style={{ margin: 0, color: "#94a3b8", fontSize: 13, lineHeight: 1.7 }}>
-                    {item.answer}
-                  </p>
-                  <p style={{ margin: "8px 0 0", fontSize: 11, color: "#334155" }}>
-                    {new Date(item.created_at).toLocaleString()}
-                  </p>
-                </div>
-              ))
+              <div className="history-list">
+                {/* FIX #5: key uses item.id */}
+                {history.map(item => (
+                  <div key={item.id} className="history-card">
+                    <p className="history-question">{item.question}</p>
+                    <p className="history-answer">{item.answer}</p>
+                    <span className="history-date">{new Date(item.created_at).toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
             )}
-          </div>
+          </section>
         )}
-      </div>
+
+      </main>
     </div>
   )
 }
