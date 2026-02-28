@@ -1,15 +1,21 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import shutil
 import os
+from typing import Optional
 
 from ingest import ingest_document
-from retrieval import store_chunks
-from llm import answer
+from retrieval import retrieve, build_user_index
+from llm import generate_answer, fallback_answer
+from database import (
+    get_user_from_token, save_document, save_chunks,
+    get_user_chunks, save_chat, get_user_chat_history,
+    check_duplicate, get_user_documents
+)
 
 app = FastAPI(title="SmartRAG API")
 
@@ -24,11 +30,19 @@ app.add_middleware(
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-chat_history = []
-
 class QueryRequest(BaseModel):
     question: str
     use_llm: bool = True
+
+def get_current_user(authorization: Optional[str] = Header(None)):
+    """Extract and verify user from Authorization header."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    token = authorization.replace("Bearer ", "")
+    user = get_user_from_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return user
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def root():
@@ -39,14 +53,37 @@ async def preflight_handler():
     return {"message": "Preflight OK"}
 
 @app.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    file: UploadFile = File(...),
+    authorization: Optional[str] = Header(None)
+):
+    user = get_current_user(authorization)
+    user_id = str(user.id)
+
     file_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(file_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
+
     result = ingest_document(file_path)
+
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
-    store_chunks(result["chunks"], result["doc_id"], result["trust_score"])
+
+    # Check duplicate per user
+    if check_duplicate(user_id, result["doc_hash"]):
+        raise HTTPException(status_code=400, detail="You have already uploaded this document.")
+
+    # Save to Supabase
+    save_document(
+        user_id=user_id,
+        doc_id=result["doc_id"],
+        doc_hash=result["doc_hash"],
+        trust_score=result["trust_score"],
+        chunk_count=result["chunk_count"],
+        filename=file.filename
+    )
+    save_chunks(user_id, result["doc_id"], result["chunks"], result["trust_score"])
+
     return {
         "message": "Document uploaded and indexed successfully.",
         "doc_id": result["doc_id"],
@@ -55,20 +92,66 @@ async def upload_document(file: UploadFile = File(...)):
     }
 
 @app.post("/query")
-def query_document(request: QueryRequest):
-    result = answer(request.question, use_llm=request.use_llm)
-    chat_history.append({
-        "question": request.question,
-        "answer": result["answer"],
-        "answerable": result["answerable"]
-    })
-    return result
+def query_document(
+    request: QueryRequest,
+    authorization: Optional[str] = Header(None)
+):
+    user = get_current_user(authorization)
+    user_id = str(user.id)
+
+    # Load this user's chunks from Supabase
+    user_chunks = get_user_chunks(user_id)
+    if not user_chunks:
+        raise HTTPException(status_code=400, detail="No documents uploaded yet.")
+
+    chunks = [c["content"] for c in user_chunks]
+    metadatas = [{"doc_id": c["doc_id"], "trust": c["trust_score"], "chunk_index": c["chunk_index"]} for c in user_chunks]
+
+    # Build index and retrieve
+    retrieval_result = retrieve(request.question, chunks, metadatas)
+
+    if not retrieval_result["answerable"]:
+        answer = "I don't have enough information in your documents to answer that."
+        save_chat(user_id, request.question, answer, False)
+        return {"answer": answer, "answerable": False, "sources": []}
+
+    if request.use_llm:
+        answer = generate_answer(request.question, retrieval_result["chunks"])
+    else:
+        answer = fallback_answer(retrieval_result["chunks"])
+
+    save_chat(user_id, request.question, answer, True)
+
+    sources = [
+        {
+            "chunk_index": i + 1,
+            "doc_id": meta.get("doc_id", "unknown"),
+            "trust_score": meta.get("trust", 100.0),
+            "relevance_score": round(score * 100, 1),
+            "excerpt": chunk[:200] + "..."
+        }
+        for i, (chunk, meta, score) in enumerate(zip(
+            retrieval_result["chunks"],
+            retrieval_result["metadatas"],
+            retrieval_result["scores"]
+        ))
+    ]
+
+    return {"answer": answer, "answerable": True, "sources": sources}
+
+@app.get("/documents")
+def get_documents(authorization: Optional[str] = Header(None)):
+    user = get_current_user(authorization)
+    docs = get_user_documents(str(user.id))
+    return {"documents": docs}
 
 @app.get("/history")
-def get_history():
-    return {"history": chat_history}
+def get_history(authorization: Optional[str] = Header(None)):
+    user = get_current_user(authorization)
+    history = get_user_chat_history(str(user.id))
+    return {"history": history}
 
 @app.delete("/history")
-def clear_history():
-    chat_history.clear()
+def clear_history(authorization: Optional[str] = Header(None)):
+    user = get_current_user(authorization)
     return {"message": "History cleared."}

@@ -3,61 +3,51 @@ from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 import numpy as np
 
-# In-memory stores
-all_chunks = []
-all_metadatas = []
-vectorizer = TfidfVectorizer(max_features=5000)
-tfidf_matrix = None
+def build_user_index(chunks: list):
+    """Build a TF-IDF index for a user's chunks."""
+    vectorizer = TfidfVectorizer(max_features=5000)
+    matrix = vectorizer.fit_transform(chunks)
+    return vectorizer, matrix
 
-def store_chunks(chunks: list, doc_id: str, trust_score: float):
-    global all_chunks, all_metadatas, tfidf_matrix, vectorizer
-
-    print(f"Storing {len(chunks)} chunks...")
-    ids_start = len(all_chunks)
-    metadatas = [{"doc_id": doc_id, "trust": trust_score, "chunk_index": i} for i in range(len(chunks))]
-
-    all_chunks.extend(chunks)
-    all_metadatas.extend(metadatas)
-
-    # Refit TF-IDF on all chunks
-    tfidf_matrix = vectorizer.fit_transform(all_chunks)
-    print(f"Stored {len(chunks)} chunks for doc '{doc_id}'")
-
-def vector_search(query: str, top_k: int = 10) -> list:
-    global tfidf_matrix
-    if tfidf_matrix is None or len(all_chunks) == 0:
+def vector_search(query: str, chunks: list, vectorizer, matrix, top_k: int = 10) -> list:
+    if not chunks:
         return []
     query_vec = vectorizer.transform([query])
-    scores = cosine_similarity(query_vec, tfidf_matrix)[0]
+    scores = cosine_similarity(query_vec, matrix)[0]
     top_indices = np.argsort(scores)[::-1][:top_k]
-    return [(all_chunks[i], all_metadatas[i], float(scores[i])) for i in top_indices]
+    return [(chunks[i], float(scores[i])) for i in top_indices]
 
-def bm25_search(query: str, top_k: int = 10) -> list:
-    if not all_chunks:
+def bm25_search(query: str, chunks: list, top_k: int = 10) -> list:
+    if not chunks:
         return []
-    tokenized_corpus = [c.split() for c in all_chunks]
-    bm25 = BM25Okapi(tokenized_corpus)
+    tokenized = [c.split() for c in chunks]
+    bm25 = BM25Okapi(tokenized)
     scores = bm25.get_scores(query.split())
     top_indices = np.argsort(scores)[::-1][:top_k]
-    return [(all_chunks[i], all_metadatas[i], float(scores[i])) for i in top_indices]
+    return [(chunks[i], float(scores[i])) for i in top_indices]
 
-def hybrid_search(query: str, top_k: int = 10) -> list:
-    vec_results = vector_search(query, top_k)
-    bm25_results = bm25_search(query, top_k)
+def hybrid_search(query: str, chunks: list, metadatas: list, top_k: int = 10) -> list:
+    vectorizer, matrix = build_user_index(chunks)
+    vec_results = vector_search(query, chunks, vectorizer, matrix, top_k)
+    bm25_results = bm25_search(query, chunks, top_k)
+
     seen = {}
-    for chunk, meta, score in vec_results + bm25_results:
-        if chunk not in seen or score > seen[chunk][1]:
-            seen[chunk] = (meta, score)
-    merged = [(chunk, meta, score) for chunk, (meta, score) in seen.items()]
+    for chunk, score in vec_results + bm25_results:
+        if chunk not in seen or score > seen[chunk]:
+            seen[chunk] = score
+
+    # Match back to metadatas
+    chunk_to_meta = {c: m for c, m in zip(chunks, metadatas)}
+    merged = [(chunk, chunk_to_meta.get(chunk, {}), score) for chunk, score in seen.items()]
     merged.sort(key=lambda x: -x[2])
     return merged[:top_k]
 
-def rerank(query: str, candidates: list) -> list:
+def rerank(candidates: list) -> list:
     reranked = []
     doc_chunk_count = {}
     for chunk, meta, base_score in candidates:
         doc_id = meta.get("doc_id", "unknown")
-        trust = meta.get("trust", 1.0)
+        trust = meta.get("trust", 100.0) / 100.0
         if doc_chunk_count.get(doc_id, 0) >= 3:
             continue
         final_score = base_score * trust
@@ -66,14 +56,14 @@ def rerank(query: str, candidates: list) -> list:
     reranked.sort(key=lambda x: -x[2])
     return reranked[:5]
 
-def is_answerable(candidates: list, threshold: float = 0.1) -> bool:
+def is_answerable(candidates: list, threshold: float = 0.05) -> bool:
     if not candidates:
         return False
     return candidates[0][2] >= threshold
 
-def retrieve(query: str) -> dict:
-    candidates = hybrid_search(query)
-    reranked = rerank(query, candidates)
+def retrieve(query: str, chunks: list, metadatas: list) -> dict:
+    candidates = hybrid_search(query, chunks, metadatas)
+    reranked = rerank(candidates)
     answerable = is_answerable(reranked)
     return {
         "answerable": answerable,

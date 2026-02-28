@@ -52,8 +52,8 @@ def compute_trust_score(text: str, sanitized_text: str) -> float:
         return 0.0
     ratio = sanitized_len / original_len
     # If more than 20% was stripped, lower the trust score
-    trust = min(1.0, ratio * 1.2)
-    return round(trust, 2)
+    trust = min(100.0, ratio * 120)
+    return round(trust, 1)
 
 def chunk_text(text: str, chunk_size: int = 400, overlap: int = 50) -> list:
     """Split text into overlapping word-based chunks."""
@@ -99,10 +99,3 @@ def ingest_document(file_path: str) -> dict:
         "chunks": chunks,
         "chunk_count": len(chunks)
     }
-
-if __name__ == "__main__":
-    result = ingest_document("test.pdf")
-    print(f"Doc ID: {result['doc_id']}")
-    print(f"Trust Score: {result['trust_score']}")
-    print(f"Chunks: {result['chunk_count']}")
-    print(f"First chunk preview: {result['chunks'][0][:200]}")
