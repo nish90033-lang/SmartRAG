@@ -4,3 +4,11 @@ numpy
 sentence-transformers
 rank-bm25
 torch
+pymupdf
+python-multipart
+groq
+python-dotenv
+bcrypt
+pyjwt
+psycopg2-binary
+scikit-learn
