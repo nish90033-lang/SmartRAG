@@ -1,13 +1,6 @@
 fastapi
 uvicorn
-pymupdf
-rank_bm25
-python-multipart
-groq
-python-dotenv
 numpy
-scikit-learn
-bcrypt
-pyjwt
-psycopg2-binary
 sentence-transformers
+rank-bm25
+torch==2.2.2
