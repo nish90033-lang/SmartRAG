@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react"
 import axios from "axios"
 import "./App.css"
 
-const API = "https://smartrag-backend.onrender.com"
+const API = "https://smartrag.onrender.com"
 
 export default function App() {
   const [session, setSession]         = useState(null)
