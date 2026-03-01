@@ -3,18 +3,25 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+_embedding_model = None
+
+def get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+        _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _embedding_model
 
 def build_index(chunks: list):
     if not chunks:
         return None, None
-    embeddings = embedding_model.encode(chunks, show_progress_bar=False)
+    embeddings = get_embedding_model().encode(chunks, show_progress_bar=False)
     tokenized = [c.lower().split() for c in chunks]
     bm25 = BM25Okapi(tokenized)
     return embeddings, bm25
 
 def semantic_search(query: str, chunks: list, embeddings, top_k: int = 10):
-    query_emb = embedding_model.encode([query])
+    query_emb = get_embedding_model().encode([query])
     scores = cosine_similarity(query_emb, embeddings)[0]
     top_indices = np.argsort(scores)[::-1][:top_k]
     return [(chunks[i], float(scores[i])) for i in top_indices]
