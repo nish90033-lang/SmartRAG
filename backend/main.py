@@ -9,14 +9,13 @@ import os
 from typing import Optional
 
 from ingest import ingest_document
-from retrieval import retrieve, build_index
+from retrieval import retrieve
 from llm import generate_answer, fallback_answer
 from database import (
     get_user_from_token, save_document, save_chunks,
     get_user_chunks, save_chat, get_user_chat_history,
     check_duplicate, get_user_documents,
-    create_user, login_user, create_token,
-    get_all_users  # Make sure this exists
+    create_user, login_user, create_token
 )
 
 app = FastAPI(title="SmartRAG API")
@@ -32,17 +31,6 @@ app.add_middleware(
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# =============================
-# GLOBAL CACHE (In-Memory Index)
-# =============================
-
-USER_INDEX_CACHE = {}
-
-
-# =============================
-# MODELS
-# =============================
-
 class AuthRequest(BaseModel):
     email: str
     password: str
@@ -51,11 +39,6 @@ class QueryRequest(BaseModel):
     question: str
     use_llm: bool = True
     doc_id: Optional[str] = None
-
-
-# =============================
-# AUTH
-# =============================
 
 def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -66,56 +49,13 @@ def get_current_user(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid token")
     return user
 
-
-# =============================
-# STARTUP: REBUILD ALL INDEXES
-# =============================
-
-@app.on_event("startup")
-def rebuild_all_indexes():
-    print("Rebuilding semantic indexes...")
-
-    users = get_all_users()
-    for user in users:
-        user_id = str(user["id"])
-        user_chunks = get_user_chunks(user_id)
-
-        if not user_chunks:
-            continue
-
-        chunks = [c["content"] for c in user_chunks]
-
-        embeddings, bm25 = build_index(chunks)
-
-        USER_INDEX_CACHE[user_id] = {
-            "chunks": chunks,
-            "metadatas": [
-                {
-                    "doc_id": c["doc_id"],
-                    "trust": c["trust_score"],
-                    "chunk_index": c["chunk_index"]
-                }
-                for c in user_chunks
-            ],
-            "embeddings": embeddings,
-            "bm25": bm25
-        }
-
-    print("Indexes rebuilt successfully.")
-
-
-# =============================
-# ROOT
-# =============================
-
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"status": "SmartRAG is running"}
 
-
-# =============================
-# AUTH ROUTES
-# =============================
+@app.options("/{full_path:path}")
+async def preflight_handler():
+    return {"message": "Preflight OK"}
 
 @app.post("/auth/signup")
 def signup(request: AuthRequest):
@@ -125,7 +65,6 @@ def signup(request: AuthRequest):
     token = create_token(user["id"], user["email"])
     return {"token": token, "user": user}
 
-
 @app.post("/auth/login")
 def login(request: AuthRequest):
     user = login_user(request.email, request.password)
@@ -133,11 +72,6 @@ def login(request: AuthRequest):
         raise HTTPException(status_code=401, detail="Invalid email or password.")
     token = create_token(user["id"], user["email"])
     return {"token": token, "user": user}
-
-
-# =============================
-# UPLOAD
-# =============================
 
 @app.post("/upload")
 async def upload_document(
@@ -167,28 +101,7 @@ async def upload_document(
         chunk_count=result["chunk_count"],
         filename=file.filename
     )
-
     save_chunks(user_id, result["doc_id"], result["chunks"], result["trust_score"])
-
-    # 🔥 Rebuild user index after upload
-    user_chunks = get_user_chunks(user_id)
-    chunks = [c["content"] for c in user_chunks]
-
-    embeddings, bm25 = build_index(chunks)
-
-    USER_INDEX_CACHE[user_id] = {
-        "chunks": chunks,
-        "metadatas": [
-            {
-                "doc_id": c["doc_id"],
-                "trust": c["trust_score"],
-                "chunk_index": c["chunk_index"]
-            }
-            for c in user_chunks
-        ],
-        "embeddings": embeddings,
-        "bm25": bm25
-    }
 
     return {
         "message": "Document uploaded and indexed successfully.",
@@ -196,11 +109,6 @@ async def upload_document(
         "trust_score": result["trust_score"],
         "chunk_count": result["chunk_count"]
     }
-
-
-# =============================
-# QUERY
-# =============================
 
 @app.post("/query")
 def query_document(
@@ -210,62 +118,28 @@ def query_document(
     user = get_current_user(authorization)
     user_id = str(user["id"])
 
-    # If cache missing (first query after restart)
-    if user_id not in USER_INDEX_CACHE:
-        user_chunks = get_user_chunks(user_id)
-        if not user_chunks:
-            raise HTTPException(status_code=400, detail="No documents found.")
-
-        chunks = [c["content"] for c in user_chunks]
-        embeddings, bm25 = build_index(chunks)
-
-        USER_INDEX_CACHE[user_id] = {
-            "chunks": chunks,
-            "metadatas": [
-                {
-                    "doc_id": c["doc_id"],
-                    "trust": c["trust_score"],
-                    "chunk_index": c["chunk_index"]
-                }
-                for c in user_chunks
-            ],
-            "embeddings": embeddings,
-            "bm25": bm25
-        }
-
-    user_data = USER_INDEX_CACHE[user_id]
-
-    # Optional document filter
-    chunks = user_data["chunks"]
-    metadatas = user_data["metadatas"]
+    user_chunks = get_user_chunks(user_id)
 
     if request.doc_id:
-        filtered = [
-            (c, m)
-            for c, m in zip(chunks, metadatas)
-            if m["doc_id"] == request.doc_id
-        ]
-        if not filtered:
-            raise HTTPException(status_code=400, detail="Selected document not found.")
-        chunks, metadatas = zip(*filtered)
-        chunks = list(chunks)
-        metadatas = list(metadatas)
+        user_chunks = [c for c in user_chunks if c["doc_id"] == request.doc_id]
 
-        embeddings, bm25 = build_index(chunks)
-    else:
-        embeddings = user_data["embeddings"]
-        bm25 = user_data["bm25"]
+    if not user_chunks:
+        raise HTTPException(status_code=400, detail="No documents found. Please upload a PDF first.")
 
-    retrieval_result = retrieve(
-        request.question,
-        chunks,
-        metadatas,
-        embeddings,
-        bm25
-    )
+    chunks = [c["content"] for c in user_chunks]
+    metadatas = [
+        {
+            "doc_id": c["doc_id"],
+            "trust": c["trust_score"],
+            "chunk_index": c["chunk_index"]
+        }
+        for c in user_chunks
+    ]
 
-    if not retrieval_result["chunks"]:
-        answer = "I don't have enough information to answer that."
+    retrieval_result = retrieve(request.question, chunks, metadatas)
+
+    if not retrieval_result["answerable"]:
+        answer = "I don't have enough information in your documents to answer that."
         save_chat(user_id, request.question, answer, False)
         return {"answer": answer, "answerable": False, "sources": []}
 
@@ -293,20 +167,19 @@ def query_document(
 
     return {"answer": answer, "answerable": True, "sources": sources}
 
-
-# =============================
-# DOCUMENTS + HISTORY
-# =============================
-
 @app.get("/documents")
 def get_documents(authorization: Optional[str] = Header(None)):
     user = get_current_user(authorization)
     docs = get_user_documents(str(user["id"]))
     return {"documents": docs}
 
-
 @app.get("/history")
 def get_history(authorization: Optional[str] = Header(None)):
     user = get_current_user(authorization)
     history = get_user_chat_history(str(user["id"]))
     return {"history": history}
+
+@app.delete("/history")
+def clear_history(authorization: Optional[str] = Header(None)):
+    user = get_current_user(authorization)
+    return {"message": "History cleared."}

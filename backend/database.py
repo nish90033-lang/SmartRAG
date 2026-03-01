@@ -1,35 +1,27 @@
-import sqlite3
+import psycopg2
+import psycopg2.extras
 import bcrypt
 import jwt
 import os
 import uuid
 from datetime import datetime, timedelta
 
-DB_PATH = "smartrag.db"
-JWT_SECRET = os.environ.get("JWT_SECRET", "smartrag-secret-key-change-in-production")
-
-
-# ─────────────────────────────────────────────
-# DB CONNECTION
-# ─────────────────────────────────────────────
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://smartrag_db_user:MpPdvqETkwVGQejpQuF3TX4ei3lItebm@dpg-d6ho9gpdrdic73cp4eng-a/smartrag_db")
+JWT_SECRET = os.environ.get("JWT_SECRET", "smartrag-super-secret-key-2024")
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     return conn
 
-
 def init_db():
-    """Create tables if they don't exist."""
     conn = get_db()
     cursor = conn.cursor()
-
-    cursor.executescript("""
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
             email TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS documents (
@@ -40,8 +32,7 @@ def init_db():
             trust_score REAL DEFAULT 100.0,
             chunk_count INTEGER DEFAULT 0,
             filename TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            created_at TIMESTAMP DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS chunks (
@@ -51,8 +42,7 @@ def init_db():
             chunk_index INTEGER NOT NULL,
             content TEXT NOT NULL,
             trust_score REAL DEFAULT 100.0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            created_at TIMESTAMP DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS chat_history (
@@ -60,63 +50,51 @@ def init_db():
             user_id TEXT NOT NULL,
             question TEXT NOT NULL,
             answer TEXT NOT NULL,
-            answerable INTEGER DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id)
+            answerable BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT NOW()
         );
     """)
-
     conn.commit()
+    cursor.close()
     conn.close()
 
-
-# Initialize DB on import
 init_db()
 
-
-# ─────────────────────────────────────────────
-# AUTH
-# ─────────────────────────────────────────────
+# ─── AUTH ───────────────────────────────────────────
 
 def create_user(email: str, password: str) -> dict:
     conn = get_db()
     try:
+        cursor = conn.cursor()
         user_id = str(uuid.uuid4())
         password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-
-        conn.execute(
-            "INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)",
+        cursor.execute(
+            "INSERT INTO users (id, email, password_hash) VALUES (%s, %s, %s)",
             (user_id, email, password_hash)
         )
         conn.commit()
-
         return {"id": user_id, "email": email}
-
-    except sqlite3.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
         return None
     finally:
+        cursor.close()
         conn.close()
-
 
 def login_user(email: str, password: str) -> dict:
     conn = get_db()
     try:
-        user = conn.execute(
-            "SELECT * FROM users WHERE email = ?",
-            (email,)
-        ).fetchone()
-
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+        user = cursor.fetchone()
         if not user:
             return None
-
         if not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
             return None
-
         return {"id": user["id"], "email": user["email"]}
-
     finally:
+        cursor.close()
         conn.close()
-
 
 def create_token(user_id: str, email: str) -> str:
     payload = {
@@ -126,145 +104,102 @@ def create_token(user_id: str, email: str) -> str:
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
-
 def get_user_from_token(token: str) -> dict:
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
         return {"id": payload["user_id"], "email": payload["email"]}
-    except jwt.ExpiredSignatureError:
-        return None
-    except jwt.InvalidTokenError:
+    except Exception:
         return None
 
+# ─── DOCUMENTS ──────────────────────────────────────
 
-# ─────────────────────────────────────────────
-# USERS (FOR INDEX REBUILD)
-# ─────────────────────────────────────────────
-
-def get_all_users() -> list:
+def save_document(user_id: str, doc_id: str, doc_hash: str, trust_score: float, chunk_count: int, filename: str):
     conn = get_db()
     try:
-        rows = conn.execute("SELECT id, email FROM users").fetchall()
-        return [dict(row) for row in rows]
-    finally:
-        conn.close()
-
-
-# ─────────────────────────────────────────────
-# DOCUMENTS
-# ─────────────────────────────────────────────
-
-def save_document(user_id: str, doc_id: str, doc_hash: str,
-                  trust_score: float, chunk_count: int, filename: str):
-    conn = get_db()
-    try:
-        conn.execute(
-            """INSERT INTO documents 
-               (id, user_id, doc_id, doc_hash, trust_score, chunk_count, filename) 
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (str(uuid.uuid4()), user_id, doc_id, doc_hash,
-             trust_score, chunk_count, filename)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO documents (id, user_id, doc_id, doc_hash, trust_score, chunk_count, filename) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (str(uuid.uuid4()), user_id, doc_id, doc_hash, trust_score, chunk_count, filename)
         )
         conn.commit()
     finally:
+        cursor.close()
         conn.close()
-
 
 def get_user_documents(user_id: str) -> list:
     conn = get_db()
     try:
-        rows = conn.execute(
-            """SELECT * FROM documents 
-               WHERE user_id = ? 
-               ORDER BY created_at DESC""",
-            (user_id,)
-        ).fetchall()
-
-        return [dict(row) for row in rows]
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM documents WHERE user_id = %s ORDER BY created_at DESC", (user_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
     finally:
+        cursor.close()
         conn.close()
-
 
 def check_duplicate(user_id: str, doc_hash: str) -> bool:
     conn = get_db()
     try:
-        row = conn.execute(
-            "SELECT id FROM documents WHERE user_id = ? AND doc_hash = ?",
-            (user_id, doc_hash)
-        ).fetchone()
-
-        return row is not None
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id FROM documents WHERE user_id = %s AND doc_hash = %s", (user_id, doc_hash)
+        )
+        return cursor.fetchone() is not None
     finally:
+        cursor.close()
         conn.close()
 
+# ─── CHUNKS ─────────────────────────────────────────
 
-# ─────────────────────────────────────────────
-# CHUNKS
-# ─────────────────────────────────────────────
-
-def save_chunks(user_id: str, doc_id: str,
-                chunks: list, trust_score: float):
+def save_chunks(user_id: str, doc_id: str, chunks: list, trust_score: float):
     conn = get_db()
     try:
+        cursor = conn.cursor()
         for i, chunk in enumerate(chunks):
-            conn.execute(
-                """INSERT INTO chunks 
-                   (id, user_id, doc_id, chunk_index, content, trust_score) 
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (str(uuid.uuid4()), user_id, doc_id,
-                 i, chunk, trust_score)
+            cursor.execute(
+                "INSERT INTO chunks (id, user_id, doc_id, chunk_index, content, trust_score) VALUES (%s, %s, %s, %s, %s, %s)",
+                (str(uuid.uuid4()), user_id, doc_id, i, chunk, trust_score)
             )
         conn.commit()
     finally:
+        cursor.close()
         conn.close()
-
 
 def get_user_chunks(user_id: str) -> list:
     conn = get_db()
     try:
-        rows = conn.execute(
-            """SELECT * FROM chunks 
-               WHERE user_id = ? 
-               ORDER BY doc_id, chunk_index""",
-            (user_id,)
-        ).fetchall()
-
-        return [dict(row) for row in rows]
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM chunks WHERE user_id = %s", (user_id,))
+        return [dict(row) for row in cursor.fetchall()]
     finally:
+        cursor.close()
         conn.close()
 
+# ─── CHAT HISTORY ───────────────────────────────────
 
-# ─────────────────────────────────────────────
-# CHAT HISTORY
-# ─────────────────────────────────────────────
-
-def save_chat(user_id: str, question: str,
-              answer: str, answerable: bool):
+def save_chat(user_id: str, question: str, answer: str, answerable: bool):
     conn = get_db()
     try:
-        conn.execute(
-            """INSERT INTO chat_history 
-               (id, user_id, question, answer, answerable) 
-               VALUES (?, ?, ?, ?, ?)""",
-            (str(uuid.uuid4()), user_id,
-             question, answer,
-             1 if answerable else 0)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO chat_history (id, user_id, question, answer, answerable) VALUES (%s, %s, %s, %s, %s)",
+            (str(uuid.uuid4()), user_id, question, answer, answerable)
         )
         conn.commit()
     finally:
+        cursor.close()
         conn.close()
-
 
 def get_user_chat_history(user_id: str) -> list:
     conn = get_db()
     try:
-        rows = conn.execute(
-            """SELECT * FROM chat_history 
-               WHERE user_id = ? 
-               ORDER BY created_at DESC""",
-            (user_id,)
-        ).fetchall()
-
-        return [dict(row) for row in rows]
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM chat_history WHERE user_id = %s ORDER BY created_at DESC", (user_id,)
+        )
+        return [dict(row) for row in cursor.fetchall()]
     finally:
+        cursor.close()
         conn.close()
+
