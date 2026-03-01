@@ -58,7 +58,12 @@ def init_db():
     cursor.close()
     conn.close()
 
-init_db()
+try:
+    init_db()
+    print("✅ Database initialized successfully")
+except Exception as e:
+    print(f"⚠️ Database init error: {e}")
+
 
 # ─── AUTH ───────────────────────────────────────────
 
