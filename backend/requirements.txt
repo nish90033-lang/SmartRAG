@@ -3,4 +3,4 @@ uvicorn
 numpy
 sentence-transformers
 rank-bm25
-torch==2.2.2
+torch
