@@ -5,50 +5,49 @@ import "./App.css"
 const API = "https://smartrag.onrender.com"
 
 export default function App() {
-  const [session, setSession]         = useState(null)
-  const [page, setPage]               = useState("documents")
+  const [session, setSession]           = useState(null)
+  const [page, setPage]                 = useState("documents")
 
   // Auth
-  const [email, setEmail]             = useState("")
-  const [password, setPassword]       = useState("")
-  const [authMode, setAuthMode]       = useState("login")
-  const [authError, setAuthError]     = useState("")
-  const [authLoading, setAuthLoading] = useState(false)
+  const [email, setEmail]               = useState("")
+  const [password, setPassword]         = useState("")
+  const [authMode, setAuthMode]         = useState("login")
+  const [authError, setAuthError]       = useState("")
+  const [authLoading, setAuthLoading]   = useState(false)
   const [showPassword, setShowPassword] = useState(false)
-  const [rememberMe, setRememberMe]   = useState(false)   // FIX #4: wired up
-  const [resetMode, setResetMode]     = useState(false)
-  const [resetSent, setResetSent]     = useState(false)
+  const [rememberMe, setRememberMe]     = useState(false)
+  const [resetMode, setResetMode]       = useState(false)
+  const [resetSent, setResetSent]       = useState(false)
 
   // Documents
-  const [file, setFile]               = useState(null)
-  const [uploading, setUploading]     = useState(false)
+  const [file, setFile]                 = useState(null)
+  const [uploading, setUploading]       = useState(false)
   const [uploadStatus, setUploadStatus] = useState(null)
-  const [documents, setDocuments]     = useState([])
-  const [docsLoading, setDocsLoading] = useState(false)   // FIX #6: loading state
-  const [selectedDoc, setSelectedDoc] = useState("")
+  const [documents, setDocuments]       = useState([])
+  const [docsLoading, setDocsLoading]   = useState(false)
+
+  // ── CHANGED: selectedDocs array instead of single selectedDoc string ──────
+  const [selectedDocs, setSelectedDocs] = useState([])
 
   // Chat
-  const [question, setQuestion]       = useState("")
-  const [loading, setLoading]         = useState(false)
-  const [result, setResult]           = useState(null)
+  const [question, setQuestion]         = useState("")
+  const [loading, setLoading]           = useState(false)
+  const [result, setResult]             = useState(null)
 
   // History
-  const [history, setHistory]         = useState([])
-  const [histLoading, setHistLoading] = useState(false)   // FIX #6: loading state
+  const [history, setHistory]           = useState([])
+  const [histLoading, setHistLoading]   = useState(false)
 
-  // FIX #3: ref to reset file input DOM element
   const fileInputRef = useRef(null)
 
   // ── Session bootstrap ─────────────────────────────────────────────────────
   useEffect(() => {
-    // FIX #2: read from whichever store was used at login
     const token = sessionStorage.getItem("smartrag_token") || localStorage.getItem("smartrag_token")
     const user  = sessionStorage.getItem("smartrag_user")  || localStorage.getItem("smartrag_user")
     if (token && user) {
       try {
         setSession({ access_token: token, user: JSON.parse(user) })
       } catch {
-        // FIX #9 (partial): guard against corrupt localStorage value crashing the app
         sessionStorage.removeItem("smartrag_token")
         sessionStorage.removeItem("smartrag_user")
         localStorage.removeItem("smartrag_token")
@@ -57,7 +56,6 @@ export default function App() {
     }
   }, [])
 
-  // FIX #3 (useCallback): stable reference so the useEffect dep array is correct
   const fetchDocuments = useCallback(async () => {
     setDocsLoading(true)
     try {
@@ -70,7 +68,6 @@ export default function App() {
     }
   }, [session]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // FIX #3 (useEffect dep): include fetchDocuments in dep array
   useEffect(() => {
     if (session) fetchDocuments()
   }, [session, fetchDocuments])
@@ -86,12 +83,9 @@ export default function App() {
     try {
       const endpoint = authMode === "login" ? "/auth/login" : "/auth/signup"
       const res = await axios.post(`${API}${endpoint}`, { email, password })
-
-      // FIX #2 + FIX #4: use sessionStorage by default; localStorage only if "remember me"
       const store = rememberMe ? localStorage : sessionStorage
       store.setItem("smartrag_token", res.data.token)
       store.setItem("smartrag_user",  JSON.stringify(res.data.user))
-
       setSession({ access_token: res.data.token, user: res.data.user })
     } catch (err) {
       setAuthError(err.response?.data?.detail || "Authentication failed. Please try again.")
@@ -100,7 +94,6 @@ export default function App() {
     }
   }
 
-  // FIX #1: handleReset actually calls the API
   async function handleReset() {
     setAuthLoading(true)
     setAuthError("")
@@ -132,7 +125,6 @@ export default function App() {
     try {
       const res = await axios.post(`${API}/upload`, formData, { headers: authHeaders() })
       setUploadStatus({ success: true, data: res.data })
-      // FIX #3: clear both state and DOM input after successful upload
       setFile(null)
       if (fileInputRef.current) fileInputRef.current.value = ""
       fetchDocuments()
@@ -143,16 +135,29 @@ export default function App() {
     }
   }
 
+  // ── Multi-doc selection helpers ───────────────────────────────────────────
+  function toggleDoc(docId) {
+    setSelectedDocs(prev =>
+      prev.includes(docId)
+        ? prev.filter(id => id !== docId)
+        : [...prev, docId]
+    )
+  }
+
+  function selectAllDocs()  { setSelectedDocs(documents.map(d => d.doc_id)) }
+  function clearAllDocs()   { setSelectedDocs([]) }
+
   // ── Chat ──────────────────────────────────────────────────────────────────
   async function handleQuery() {
-    if (!question.trim() || !selectedDoc) return
+    if (!question.trim()) return
     setLoading(true)
     setResult(null)
     try {
       const res = await axios.post(`${API}/query`, {
         question,
         use_llm: true,
-        doc_id: String(selectedDoc)  // FIX #5: always send as string
+        // empty array = search all docs, otherwise send selected doc ids
+        doc_ids: selectedDocs.length > 0 ? selectedDocs : null
       }, { headers: authHeaders() })
       setResult(res.data)
     } catch (err) {
@@ -222,7 +227,6 @@ export default function App() {
                     onChange={e => setPassword(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && handleAuth()}
                   />
-                  {/* FIX #8: toggle sits inside pw-wrap, not auth-input, so centering is correct */}
                   <button type="button" className="pw-toggle" onClick={() => setShowPassword(v => !v)} aria-label={showPassword ? "Hide password" : "Show password"}>
                     {showPassword ? (
                       <svg viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round"/><path d="M10.58 10.58a2 2 0 002.83 2.83" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round"/><path d="M9.36 5.37A9.8 9.8 0 0112 5c7 0 11 7 11 7a18.6 18.6 0 01-2.64 3.63M6.64 6.64A18.6 18.6 0 001 12s4 7 11 7a9.8 9.8 0 005.64-1.77" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round"/></svg>
@@ -233,7 +237,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* FIX #4: remember me is fully wired */}
               <label className="checkbox-row">
                 <input type="checkbox" className="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} />
                 <span className="checkbox-label">Remember me for 30 days</span>
@@ -271,7 +274,6 @@ export default function App() {
                     />
                   </div>
                   {authError && <div className="auth-error" role="alert">{authError}</div>}
-                  {/* FIX #1: button calls real API */}
                   <button className="primary-btn full-width" onClick={handleReset} disabled={authLoading || !email}>
                     {authLoading ? <span className="spinner" /> : "Send reset link"}
                   </button>
@@ -349,7 +351,6 @@ export default function App() {
             <div className="card">
               <p className="card-label">Upload a PDF</p>
               <div className="upload-row">
-                {/* FIX #3: ref attached */}
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -373,14 +374,12 @@ export default function App() {
               )}
             </div>
 
-            {/* FIX #6: loading + empty states */}
             {docsLoading ? (
               <div className="state-placeholder">Loading documents…</div>
             ) : documents.length === 0 ? (
               <div className="state-placeholder">No documents yet. Upload a PDF above to get started.</div>
             ) : (
               <div className="doc-list">
-                {/* FIX #5: key uses doc.doc_id not index */}
                 {documents.map(doc => (
                   <div key={doc.doc_id} className="doc-row">
                     <div>
@@ -406,23 +405,50 @@ export default function App() {
             </div>
 
             <div className="card">
+
+              {/* ── CHANGED: checkbox multi-select replaces single <select> ── */}
               <div className="field-group">
-                <label className="field-label">Document</label>
-                {/* FIX #10: select has option colors + focus style */}
-                <select
-                  className="field-select"
-                  value={selectedDoc}
-                  onChange={e => setSelectedDoc(String(e.target.value))}  // FIX #5: coerce to string
-                >
-                  <option value="">Select a document…</option>
-                  {/* FIX #5: key uses doc.doc_id */}
-                  {documents.map(doc => (
-                    <option key={doc.doc_id} value={String(doc.doc_id)}>
-                      {doc.filename}
-                    </option>
-                  ))}
-                </select>
+                <div className="doc-select-header">
+                  <label className="field-label">
+                    Documents
+                    <span className="doc-select-count">
+                      {selectedDocs.length === 0
+                        ? "— searching all"
+                        : `${selectedDocs.length} of ${documents.length} selected`}
+                    </span>
+                  </label>
+                  <div className="doc-select-actions">
+                    <button className="link-btn small" onClick={selectAllDocs}>Select all</button>
+                    <span className="doc-select-divider">·</span>
+                    <button className="link-btn small" onClick={clearAllDocs}>Clear</button>
+                  </div>
+                </div>
+
+                <div className="doc-checkbox-list">
+                  {documents.length === 0 ? (
+                    <div className="state-placeholder">No documents uploaded yet.</div>
+                  ) : (
+                    documents.map(doc => (
+                      <label
+                        key={doc.doc_id}
+                        className={`doc-checkbox-row ${selectedDocs.includes(doc.doc_id) ? "checked" : ""}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedDocs.includes(doc.doc_id)}
+                          onChange={() => toggleDoc(doc.doc_id)}
+                        />
+                        <div className="doc-checkbox-info">
+                          <span className="doc-checkbox-name">{doc.filename}</span>
+                          <span className="doc-checkbox-meta">{doc.chunk_count} chunks</span>
+                        </div>
+                        <span className="badge">{doc.trust_score}% trust</span>
+                      </label>
+                    ))
+                  )}
+                </div>
               </div>
+              {/* ─────────────────────────────────────────────────────────── */}
 
               <div className="field-group">
                 <label className="field-label">Question</label>
@@ -432,12 +458,17 @@ export default function App() {
                     value={question}
                     onChange={e => setQuestion(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && handleQuery()}
-                    placeholder="Ask anything about the selected document…"
+                    placeholder={
+                      selectedDocs.length === 0
+                        ? "Ask anything across all documents…"
+                        : `Ask anything across ${selectedDocs.length} selected document${selectedDocs.length > 1 ? "s" : ""}…`
+                    }
                   />
+                  {/* CHANGED: removed !selectedDoc guard — question alone is enough */}
                   <button
                     className="primary-btn"
                     onClick={handleQuery}
-                    disabled={!question.trim() || !selectedDoc || loading}
+                    disabled={!question.trim() || loading}
                   >
                     {loading ? <span className="spinner" /> : "Ask"}
                   </button>
@@ -452,12 +483,10 @@ export default function App() {
                 </span>
                 <p className="answer-text">{result.answer}</p>
 
-                {/* FIX #12: sources section now has styles in CSS */}
                 {result.sources?.length > 0 && (
                   <div className="sources">
                     <p className="sources-label">Sources</p>
                     {result.sources.map((src, i) => (
-                      // FIX #5: stable key combining doc_id + chunk_index
                       <div key={`${src.doc_id}-${src.chunk_index}`} className="source-card">
                         <div className="source-header">
                           <span>{src.doc_id}</span>
@@ -484,14 +513,12 @@ export default function App() {
               <p className="page-sub">Your past queries and answers.</p>
             </div>
 
-            {/* FIX #6: loading + empty states */}
             {histLoading ? (
               <div className="state-placeholder">Loading history…</div>
             ) : history.length === 0 ? (
               <div className="state-placeholder">No history yet. Ask a question in Chat to get started.</div>
             ) : (
               <div className="history-list">
-                {/* FIX #5: key uses item.id */}
                 {history.map(item => (
                   <div key={item.id} className="history-card">
                     <p className="history-question">{item.question}</p>

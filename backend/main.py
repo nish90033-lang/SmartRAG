@@ -31,31 +31,38 @@ app.add_middleware(
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+
 class AuthRequest(BaseModel):
-    email: str
+    email:    str
     password: str
+
 
 class QueryRequest(BaseModel):
     question: str
-    use_llm: bool = True
-    doc_id: Optional[str] = None
+    use_llm:  bool                = True
+    doc_id:   Optional[str]       = None   # legacy single-doc
+    doc_ids:  Optional[list[str]] = None   # NEW: multi-doc selection
+
 
 def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
     token = authorization.replace("Bearer ", "")
-    user = get_user_from_token(token)
+    user  = get_user_from_token(token)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid token")
     return user
+
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"status": "SmartRAG is running"}
 
+
 @app.options("/{full_path:path}")
 async def preflight_handler():
     return {"message": "Preflight OK"}
+
 
 @app.post("/auth/signup")
 def signup(request: AuthRequest):
@@ -65,6 +72,7 @@ def signup(request: AuthRequest):
     token = create_token(user["id"], user["email"])
     return {"token": token, "user": user}
 
+
 @app.post("/auth/login")
 def login(request: AuthRequest):
     user = login_user(request.email, request.password)
@@ -73,12 +81,13 @@ def login(request: AuthRequest):
     token = create_token(user["id"], user["email"])
     return {"token": token, "user": user}
 
+
 @app.post("/upload")
 async def upload_document(
-    file: UploadFile = File(...),
+    file:          UploadFile     = File(...),
     authorization: Optional[str] = Header(None)
 ):
-    user = get_current_user(authorization)
+    user    = get_current_user(authorization)
     user_id = str(user["id"])
 
     file_path = os.path.join(UPLOAD_DIR, file.filename)
@@ -94,43 +103,52 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="You have already uploaded this document.")
 
     save_document(
-        user_id=user_id,
-        doc_id=result["doc_id"],
-        doc_hash=result["doc_hash"],
-        trust_score=result["trust_score"],
-        chunk_count=result["chunk_count"],
-        filename=file.filename
+        user_id     = user_id,
+        doc_id      = result["doc_id"],
+        doc_hash    = result["doc_hash"],
+        trust_score = result["trust_score"],
+        chunk_count = result["chunk_count"],
+        filename    = file.filename
     )
     save_chunks(user_id, result["doc_id"], result["chunks"], result["trust_score"])
 
     return {
-        "message": "Document uploaded and indexed successfully.",
-        "doc_id": result["doc_id"],
-        "trust_score": result["trust_score"],
-        "chunk_count": result["chunk_count"]
+        "message":        "Document uploaded and indexed successfully.",
+        "doc_id":         result["doc_id"],
+        "trust_score":    result["trust_score"],
+        "chunk_count":    result["chunk_count"],
+        "patterns_found": result.get("patterns_found", 0)
     }
+
 
 @app.post("/query")
 def query_document(
-    request: QueryRequest,
+    request:       QueryRequest,
     authorization: Optional[str] = Header(None)
 ):
-    user = get_current_user(authorization)
+    user    = get_current_user(authorization)
     user_id = str(user["id"])
 
     user_chunks = get_user_chunks(user_id)
 
-    if request.doc_id:
+    # ── Document filtering ────────────────────────────────────────────────────
+    if request.doc_ids:
+        # Multi-doc: filter to only the user-selected documents
+        user_chunks = [c for c in user_chunks if c["doc_id"] in request.doc_ids]
+    elif request.doc_id:
+        # Legacy single-doc support
         user_chunks = [c for c in user_chunks if c["doc_id"] == request.doc_id]
+    # else: both None → search ALL user documents
+    # ─────────────────────────────────────────────────────────────────────────
 
     if not user_chunks:
         raise HTTPException(status_code=400, detail="No documents found. Please upload a PDF first.")
 
-    chunks = [c["content"] for c in user_chunks]
+    chunks    = [c["content"] for c in user_chunks]
     metadatas = [
         {
-            "doc_id": c["doc_id"],
-            "trust": c["trust_score"],
+            "doc_id":      c["doc_id"],
+            "trust":       c["trust_score"],
             "chunk_index": c["chunk_index"]
         }
         for c in user_chunks
@@ -152,11 +170,11 @@ def query_document(
 
     sources = [
         {
-            "chunk_index": i + 1,
-            "doc_id": meta.get("doc_id", "unknown"),
-            "trust_score": meta.get("trust", 100.0),
+            "chunk_index":     meta.get("chunk_index", i + 1),
+            "doc_id":          meta.get("doc_id", "unknown"),
+            "trust_score":     meta.get("trust", 100.0),
             "relevance_score": round(score * 100, 1),
-            "excerpt": chunk[:200] + "..."
+            "excerpt":         chunk[:200] + "..."
         }
         for i, (chunk, meta, score) in enumerate(zip(
             retrieval_result["chunks"],
@@ -165,7 +183,11 @@ def query_document(
         ))
     ]
 
+    # Highest relevance doc appears first
+    sources.sort(key=lambda x: -x["relevance_score"])
+
     return {"answer": answer, "answerable": True, "sources": sources}
+
 
 @app.get("/documents")
 def get_documents(authorization: Optional[str] = Header(None)):
@@ -173,11 +195,13 @@ def get_documents(authorization: Optional[str] = Header(None)):
     docs = get_user_documents(str(user["id"]))
     return {"documents": docs}
 
+
 @app.get("/history")
 def get_history(authorization: Optional[str] = Header(None)):
-    user = get_current_user(authorization)
+    user    = get_current_user(authorization)
     history = get_user_chat_history(str(user["id"]))
     return {"history": history}
+
 
 @app.delete("/history")
 def clear_history(authorization: Optional[str] = Header(None)):
