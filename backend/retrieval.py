@@ -158,7 +158,7 @@ def retrieve(
     top_scores = [x[1] for x in scored]
 
     # Step 5: Answerability check
-    if not top_scores or top_scores[0] < 0.05:
+    if not top_scores or top_scores[0] < 0.02:
         return {
             "answerable": False,
             "chunks": [],
