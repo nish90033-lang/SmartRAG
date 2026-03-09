@@ -32,6 +32,8 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
+# ── Pydantic models ───────────────────────────────────────────────────────────
+
 class AuthRequest(BaseModel):
     email:    str
     password: str
@@ -41,8 +43,15 @@ class QueryRequest(BaseModel):
     question: str
     use_llm:  bool                = True
     doc_id:   Optional[str]       = None   # legacy single-doc
-    doc_ids:  Optional[list[str]] = None   # NEW: multi-doc selection
+    doc_ids:  Optional[list[str]] = None   # multi-doc selection
 
+
+class TextUploadRequest(BaseModel):
+    text:     str
+    doc_name: str = "Untitled Text Document"
+
+
+# ── Auth helper ───────────────────────────────────────────────────────────────
 
 def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -53,6 +62,8 @@ def get_current_user(authorization: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Invalid token")
     return user
 
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def root():
@@ -117,7 +128,50 @@ async def upload_document(
         "doc_id":         result["doc_id"],
         "trust_score":    result["trust_score"],
         "chunk_count":    result["chunk_count"],
-        "patterns_found": result.get("patterns_found", 0)
+        "patterns_found": result.get("patterns_found", 0),
+        "source_type":    "pdf",
+    }
+
+
+@app.post("/upload-text")
+async def upload_text(
+    request:       TextUploadRequest,
+    authorization: Optional[str] = Header(None)
+):
+    """
+    Ingest plain text directly — no PDF required.
+    Accepts any block of text: notes, articles, code, pasted content.
+    Uses the same pipeline as /upload (sanitize → trust → chunk → store).
+    """
+    user    = get_current_user(authorization)
+    user_id = str(user["id"])
+
+    result = ingest_document(request.text)
+
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    if check_duplicate(user_id, result["doc_hash"]):
+        raise HTTPException(status_code=400, detail="You have already uploaded this content.")
+
+    save_document(
+        user_id     = user_id,
+        doc_id      = result["doc_id"],
+        doc_hash    = result["doc_hash"],
+        trust_score = result["trust_score"],
+        chunk_count = result["chunk_count"],
+        filename    = request.doc_name,      # friendly name shown in UI
+    )
+    save_chunks(user_id, result["doc_id"], result["chunks"], result["trust_score"])
+
+    return {
+        "message":        f"Text ingested successfully. {result['chunk_count']} chunks indexed.",
+        "doc_id":         result["doc_id"],
+        "doc_name":       request.doc_name,
+        "trust_score":    result["trust_score"],
+        "chunk_count":    result["chunk_count"],
+        "patterns_found": result.get("patterns_found", 0),
+        "source_type":    "text",
     }
 
 
@@ -131,15 +185,12 @@ def query_document(
 
     user_chunks = get_user_chunks(user_id)
 
-    # ── Document filtering ────────────────────────────────────────────────────
+    # Document filtering
     if request.doc_ids:
-        # Multi-doc: filter to only the user-selected documents
         user_chunks = [c for c in user_chunks if c["doc_id"] in request.doc_ids]
     elif request.doc_id:
-        # Legacy single-doc support
         user_chunks = [c for c in user_chunks if c["doc_id"] == request.doc_id]
     # else: both None → search ALL user documents
-    # ─────────────────────────────────────────────────────────────────────────
 
     if not user_chunks:
         raise HTTPException(status_code=400, detail="No documents found. Please upload a PDF first.")
@@ -183,7 +234,6 @@ def query_document(
         ))
     ]
 
-    # Highest relevance doc appears first
     sources.sort(key=lambda x: -x["relevance_score"])
 
     return {"answer": answer, "answerable": True, "sources": sources}

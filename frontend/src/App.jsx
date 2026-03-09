@@ -26,7 +26,13 @@ export default function App() {
   const [documents, setDocuments]       = useState([])
   const [docsLoading, setDocsLoading]   = useState(false)
 
-  // ── CHANGED: selectedDocs array instead of single selectedDoc string ──────
+  // Text upload
+  const [uploadMode, setUploadMode]         = useState("pdf")   // "pdf" | "text"
+  const [textInput, setTextInput]           = useState("")
+  const [textDocName, setTextDocName]       = useState("")
+  const [textUploading, setTextUploading]   = useState(false)
+
+  // Multi-doc selection
   const [selectedDocs, setSelectedDocs] = useState([])
 
   // Chat
@@ -115,7 +121,7 @@ export default function App() {
     setSession(null)
   }
 
-  // ── Documents ─────────────────────────────────────────────────────────────
+  // ── Documents — PDF upload ────────────────────────────────────────────────
   async function handleUpload() {
     if (!file) return
     setUploading(true)
@@ -124,7 +130,7 @@ export default function App() {
     formData.append("file", file)
     try {
       const res = await axios.post(`${API}/upload`, formData, { headers: authHeaders() })
-      setUploadStatus({ success: true, data: res.data })
+      setUploadStatus({ success: true, message: `Document indexed — ${res.data.chunk_count} chunks, trust ${res.data.trust_score}%` })
       setFile(null)
       if (fileInputRef.current) fileInputRef.current.value = ""
       fetchDocuments()
@@ -135,17 +141,45 @@ export default function App() {
     }
   }
 
+  // ── Documents — Text upload ───────────────────────────────────────────────
+  async function handleTextUpload() {
+    if (!textInput.trim()) return
+    setTextUploading(true)
+    setUploadStatus(null)
+    try {
+      const res = await axios.post(
+        `${API}/upload-text`,
+        {
+          text:     textInput.trim(),
+          doc_name: textDocName.trim() || "Untitled Text Document",
+        },
+        { headers: authHeaders() }
+      )
+      setUploadStatus({
+        success: true,
+        message: `✓ "${res.data.doc_name}" indexed — ${res.data.chunk_count} chunks, trust ${res.data.trust_score}%`,
+      })
+      setTextInput("")
+      setTextDocName("")
+      fetchDocuments()
+    } catch (err) {
+      setUploadStatus({
+        success: false,
+        message: err.response?.data?.detail || "Text upload failed.",
+      })
+    } finally {
+      setTextUploading(false)
+    }
+  }
+
   // ── Multi-doc selection helpers ───────────────────────────────────────────
   function toggleDoc(docId) {
     setSelectedDocs(prev =>
-      prev.includes(docId)
-        ? prev.filter(id => id !== docId)
-        : [...prev, docId]
+      prev.includes(docId) ? prev.filter(id => id !== docId) : [...prev, docId]
     )
   }
-
-  function selectAllDocs()  { setSelectedDocs(documents.map(d => d.doc_id)) }
-  function clearAllDocs()   { setSelectedDocs([]) }
+  function selectAllDocs() { setSelectedDocs(documents.map(d => d.doc_id)) }
+  function clearAllDocs()  { setSelectedDocs([]) }
 
   // ── Chat ──────────────────────────────────────────────────────────────────
   async function handleQuery() {
@@ -156,8 +190,7 @@ export default function App() {
       const res = await axios.post(`${API}/query`, {
         question,
         use_llm: true,
-        // empty array = search all docs, otherwise send selected doc ids
-        doc_ids: selectedDocs.length > 0 ? selectedDocs : null
+        doc_ids: selectedDocs.length > 0 ? selectedDocs : null,
       }, { headers: authHeaders() })
       setResult(res.data)
     } catch (err) {
@@ -206,14 +239,8 @@ export default function App() {
 
               <div className="field-group">
                 <label className="field-label">Email address</label>
-                <input
-                  type="email"
-                  className="field-input"
-                  value={email}
-                  autoComplete="email"
-                  onChange={e => setEmail(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && handleAuth()}
-                />
+                <input type="email" className="field-input" value={email} autoComplete="email"
+                  onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && handleAuth()} />
               </div>
 
               <div className="field-group">
@@ -227,7 +254,8 @@ export default function App() {
                     onChange={e => setPassword(e.target.value)}
                     onKeyDown={e => e.key === "Enter" && handleAuth()}
                   />
-                  <button type="button" className="pw-toggle" onClick={() => setShowPassword(v => !v)} aria-label={showPassword ? "Hide password" : "Show password"}>
+                  <button type="button" className="pw-toggle" onClick={() => setShowPassword(v => !v)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}>
                     {showPassword ? (
                       <svg viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round"/><path d="M10.58 10.58a2 2 0 002.83 2.83" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round"/><path d="M9.36 5.37A9.8 9.8 0 0112 5c7 0 11 7 11 7a18.6 18.6 0 01-2.64 3.63M6.64 6.64A18.6 18.6 0 001 12s4 7 11 7a9.8 9.8 0 005.64-1.77" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round"/></svg>
                     ) : (
@@ -265,13 +293,8 @@ export default function App() {
                 <>
                   <div className="field-group">
                     <label className="field-label">Email address</label>
-                    <input
-                      type="email"
-                      className="field-input"
-                      value={email}
-                      onChange={e => setEmail(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && handleReset()}
-                    />
+                    <input type="email" className="field-input" value={email}
+                      onChange={e => setEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && handleReset()} />
                   </div>
                   {authError && <div className="auth-error" role="alert">{authError}</div>}
                   <button className="primary-btn full-width" onClick={handleReset} disabled={authLoading || !email}>
@@ -345,31 +368,75 @@ export default function App() {
           <section>
             <div className="page-header">
               <h2 className="page-title">Documents</h2>
-              <p className="page-sub">Upload PDFs to index and query.</p>
+              <p className="page-sub">Upload PDFs or paste text to index and query.</p>
             </div>
 
             <div className="card">
-              <p className="card-label">Upload a PDF</p>
-              <div className="upload-row">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".pdf"
-                  className="file-input"
-                  onChange={e => setFile(e.target.files[0] || null)}
-                />
+              <p className="card-label">Upload Document</p>
+
+              {/* PDF / Text mode toggle */}
+              <div className="tab-row" style={{ marginBottom: "16px" }}>
                 <button
-                  className="primary-btn"
-                  onClick={handleUpload}
-                  disabled={!file || uploading}
+                  className={`tab-btn ${uploadMode === "pdf" ? "active" : ""}`}
+                  onClick={() => { setUploadMode("pdf"); setUploadStatus(null) }}
                 >
-                  {uploading ? <span className="spinner" /> : "Upload & Index"}
+                  📄 PDF File
+                </button>
+                <button
+                  className={`tab-btn ${uploadMode === "text" ? "active" : ""}`}
+                  onClick={() => { setUploadMode("text"); setUploadStatus(null) }}
+                >
+                  ✏️ Paste Text
                 </button>
               </div>
 
+              {uploadMode === "pdf" ? (
+                <div className="upload-row">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".pdf"
+                    className="file-input"
+                    onChange={e => setFile(e.target.files[0] || null)}
+                  />
+                  <button className="primary-btn" onClick={handleUpload} disabled={!file || uploading}>
+                    {uploading ? <><span className="spinner" /> Indexing…</> : "Upload & Index"}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  <input
+                    className="field-input"
+                    placeholder="Document name (optional)"
+                    value={textDocName}
+                    onChange={e => setTextDocName(e.target.value)}
+                  />
+                  <textarea
+                    className="field-input"
+                    placeholder="Paste any text here — notes, articles, code, lecture content…"
+                    value={textInput}
+                    onChange={e => setTextInput(e.target.value)}
+                    rows={8}
+                    style={{ resize: "vertical", fontFamily: "var(--font-mono)", fontSize: "13px" }}
+                  />
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: "11px", color: "var(--slate-400)", fontFamily: "var(--font-mono)" }}>
+                      {textInput.trim().split(/\s+/).filter(Boolean).length} words
+                    </span>
+                    <button
+                      className="primary-btn"
+                      onClick={handleTextUpload}
+                      disabled={!textInput.trim() || textUploading}
+                    >
+                      {textUploading ? <><span className="spinner" /> Indexing…</> : "Index Text"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {uploadStatus && (
                 <div className={`status-strip ${uploadStatus.success ? "success" : "error"}`}>
-                  {uploadStatus.success ? "Document indexed successfully." : uploadStatus.message}
+                  {uploadStatus.message}
                 </div>
               )}
             </div>
@@ -377,7 +444,7 @@ export default function App() {
             {docsLoading ? (
               <div className="state-placeholder">Loading documents…</div>
             ) : documents.length === 0 ? (
-              <div className="state-placeholder">No documents yet. Upload a PDF above to get started.</div>
+              <div className="state-placeholder">No documents yet. Upload a PDF or paste text above to get started.</div>
             ) : (
               <div className="doc-list">
                 {documents.map(doc => (
@@ -405,8 +472,6 @@ export default function App() {
             </div>
 
             <div className="card">
-
-              {/* ── CHANGED: checkbox multi-select replaces single <select> ── */}
               <div className="field-group">
                 <div className="doc-select-header">
                   <label className="field-label">
@@ -448,7 +513,6 @@ export default function App() {
                   )}
                 </div>
               </div>
-              {/* ─────────────────────────────────────────────────────────── */}
 
               <div className="field-group">
                 <label className="field-label">Question</label>
@@ -464,12 +528,7 @@ export default function App() {
                         : `Ask anything across ${selectedDocs.length} selected document${selectedDocs.length > 1 ? "s" : ""}…`
                     }
                   />
-                  {/* CHANGED: removed !selectedDoc guard — question alone is enough */}
-                  <button
-                    className="primary-btn"
-                    onClick={handleQuery}
-                    disabled={!question.trim() || loading}
-                  >
+                  <button className="primary-btn" onClick={handleQuery} disabled={!question.trim() || loading}>
                     {loading ? <span className="spinner" /> : "Ask"}
                   </button>
                 </div>
@@ -486,7 +545,7 @@ export default function App() {
                 {result.sources?.length > 0 && (
                   <div className="sources">
                     <p className="sources-label">Sources</p>
-                    {result.sources.map((src, i) => (
+                    {result.sources.map((src) => (
                       <div key={`${src.doc_id}-${src.chunk_index}`} className="source-card">
                         <div className="source-header">
                           <span>{src.doc_id}</span>

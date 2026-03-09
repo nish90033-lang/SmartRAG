@@ -1,96 +1,175 @@
-from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+from sklearn.feature_extraction.text import HashingVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
-import numpy as np
+from typing import Optional
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-TRUST_THRESHOLD = 50   # poisoned docs cap at 40, clean docs score 90-100
-TOP_K           = 20   # fetch more candidates across multiple docs
-FINAL_K         = 9    # return up to 9 chunks (3 docs × 3 chunks each)
+TRUST_THRESHOLD = 50    # Chunks from docs scoring below this are blocked entirely
+TOP_K           = 20    # Candidates fetched from hybrid search
+FINAL_K         = 9     # Final chunks returned (max 3 per document)
+MAX_PER_DOC     = 3     # Diversity cap per document
 
+# ── HashingVectorizer ─────────────────────────────────────────────────────────
+# Replaces TfidfVectorizer.
+# TfidfVectorizer builds a full vocabulary matrix in RAM — grows with doc size.
+# HashingVectorizer uses a fixed-size hash table — O(1) memory always.
+# An 800-page PDF uses the same RAM as a 5-page PDF.
+# Trade-off: no inverse_transform (no stored vocabulary).
+# Cosine similarity is equally accurate.
 
-def vector_search(query: str, chunks: list, top_k: int = TOP_K) -> list:
+vectorizer = HashingVectorizer(
+    n_features=2**18,       # 262,144 hash buckets — large enough to avoid collisions
+    alternate_sign=False,   # All values positive — required for cosine similarity
+    norm='l2',              # L2-normalised so dot product == cosine similarity
+    analyzer='word',
+    ngram_range=(1, 2),     # Unigrams + bigrams for better phrase matching
+    stop_words='english',
+)
+
+# ── Hybrid search ─────────────────────────────────────────────────────────────
+
+def hybrid_search(query: str, chunks: list[str], weights: tuple = (0.7, 0.3)) -> list[float]:
+    """
+    Run TF-IDF (HashingVectorizer) and BM25 in parallel.
+    Merge scores: final = tfidf_weight * tfidf_score + bm25_weight * bm25_score.
+    Returns a list of combined scores, one per chunk.
+    """
     if not chunks:
         return []
-    vectorizer  = TfidfVectorizer(max_features=5000)
-    matrix      = vectorizer.fit_transform(chunks)
-    query_vec   = vectorizer.transform([query])
-    scores      = cosine_similarity(query_vec, matrix)[0]
-    top_indices = np.argsort(scores)[::-1][:top_k]
-    return [(chunks[i], float(scores[i])) for i in top_indices]
 
+    tfidf_w, bm25_w = weights
 
-def bm25_search(query: str, chunks: list, top_k: int = TOP_K) -> list:
-    if not chunks:
-        return []
-    tokenized   = [c.split() for c in chunks]
-    bm25        = BM25Okapi(tokenized)
-    scores      = bm25.get_scores(query.split())
-    top_indices = np.argsort(scores)[::-1][:top_k]
-    return [(chunks[i], float(scores[i])) for i in top_indices]
+    # TF-IDF (Hashing) — single transform call for all chunks + query
+    all_texts = chunks + [query]
+    matrix        = vectorizer.transform(all_texts)   # sparse, fixed memory
+    chunk_vectors = matrix[:-1]
+    query_vector  = matrix[-1]
 
+    tfidf_scores = cosine_similarity(query_vector, chunk_vectors).flatten()
 
-def hybrid_search(query: str, chunks: list, metadatas: list, top_k: int = TOP_K) -> list:
-    vec_results  = vector_search(query, chunks, top_k)
-    bm25_results = bm25_search(query, chunks, top_k)
+    # BM25
+    tokenized_chunks = [c.lower().split() for c in chunks]
+    tokenized_query  = query.lower().split()
+    bm25 = BM25Okapi(tokenized_chunks)
+    bm25_raw = np.array(bm25.get_scores(tokenized_query))
 
-    combined_scores = {}
-    for chunk, score in vec_results:
-        combined_scores[chunk] = combined_scores.get(chunk, 0) + score * 0.7
-    for chunk, score in bm25_results:
-        combined_scores[chunk] = combined_scores.get(chunk, 0) + score * 0.3
+    # Normalise BM25 to [0, 1] to match TF-IDF scale
+    bm25_max = bm25_raw.max()
+    bm25_scores = bm25_raw / bm25_max if bm25_max > 0 else bm25_raw
 
-    chunk_to_meta = {c: m for c, m in zip(chunks, metadatas)}
-    merged = [
-        (chunk, chunk_to_meta.get(chunk, {}), score)
-        for chunk, score in combined_scores.items()
-    ]
-    merged.sort(key=lambda x: -x[2])
-    return merged[:top_k]
+    combined = tfidf_w * tfidf_scores + bm25_w * bm25_scores
+    return combined.tolist()
 
+# ── Reranking ─────────────────────────────────────────────────────────────────
 
-def rerank(candidates: list, max_per_doc: int = 3, final_k: int = FINAL_K) -> list:
-    reranked        = []
-    doc_chunk_count = {}
-    for chunk, meta, base_score in candidates:
-        doc_id = meta.get("doc_id", "unknown")
-        trust  = meta.get("trust", 100.0) / 100.0
-        if doc_chunk_count.get(doc_id, 0) >= max_per_doc:
-            continue
-        final_score = base_score * trust
-        reranked.append((chunk, meta, final_score))
-        doc_chunk_count[doc_id] = doc_chunk_count.get(doc_id, 0) + 1
-    reranked.sort(key=lambda x: -x[2])
-    return reranked[:final_k]
+def rerank(
+    chunks: list[dict],
+    scores: list[float],
+    max_per_doc: int = MAX_PER_DOC,
+    final_k: int = FINAL_K,
+) -> list[dict]:
+    """
+    Rerank by relevance * (trust / 100).
+    Applies MAX_PER_DOC diversity cap across documents.
+    Returns top final_k chunks sorted by final_score descending.
+    """
+    ranked = []
+    for chunk, score in zip(chunks, scores):
+        trust = chunk.get('trust_score', 100)
+        final_score = score * (trust / 100)
+        ranked.append({
+            **chunk,
+            'relevance_score': round(score * 100, 1),
+            'final_score': final_score,
+        })
 
+    ranked.sort(key=lambda x: x['final_score'], reverse=True)
 
-def retrieve(query: str, chunks: list, metadatas: list) -> dict:
-    if not chunks:
-        return {"answerable": False, "chunks": [], "metadatas": [], "scores": []}
+    doc_counts: dict[str, int] = {}
+    selected = []
+    for item in ranked:
+        doc_id = item.get('doc_id', 'unknown')
+        if doc_counts.get(doc_id, 0) < max_per_doc:
+            selected.append(item)
+            doc_counts[doc_id] = doc_counts.get(doc_id, 0) + 1
+        if len(selected) >= final_k:
+            break
 
-    # ── L3 Anti-Poisoning: block all chunks from low-trust documents ──────────
-    trusted_chunks    = []
-    trusted_metadatas = []
-    for chunk, meta in zip(chunks, metadatas):
-        if meta.get("trust", 100.0) >= TRUST_THRESHOLD:
-            trusted_chunks.append(chunk)
-            trusted_metadatas.append(meta)
+    return selected
 
-    if not trusted_chunks:
+# ── Main retrieval function ───────────────────────────────────────────────────
+
+def retrieve(
+    query: str,
+    all_chunks: list[dict],
+    doc_ids: Optional[list[str]] = None,
+) -> dict:
+    """
+    Full retrieval pipeline.
+
+    Parameters
+    ----------
+    query      : User question string
+    all_chunks : List of chunk dicts from PostgreSQL.
+                 Each must have: content, doc_id, trust_score, chunk_index
+    doc_ids    : Optional list of doc_ids to restrict search to.
+                 None = search across all user's documents.
+
+    Returns
+    -------
+    dict:
+        answerable    : bool
+        chunks        : list of reranked chunk dicts  (if answerable)
+        blocked_reason: str | None
+    """
+
+    # Step 1: Filter by selected doc_ids
+    pool = [c for c in all_chunks if c.get('doc_id') in doc_ids] if doc_ids else all_chunks
+
+    if not pool:
         return {
-            "answerable":     False,
-            "chunks":         [],
-            "metadatas":      [],
-            "scores":         [],
-            "blocked_reason": "All chunks originated from low-trust documents."
+            "answerable": False,
+            "chunks": [],
+            "blocked_reason": "No documents found for the given selection.",
         }
-    # ─────────────────────────────────────────────────────────────────────────
 
-    candidates = hybrid_search(query, trusted_chunks, trusted_metadatas, top_k=TOP_K)
-    reranked   = rerank(candidates)
+    # Step 2: Trust filtering — blocks poisoned docs (trust <= 40) before LLM
+    trusted_pool = [c for c in pool if c.get('trust_score', 100) >= TRUST_THRESHOLD]
+
+    if not trusted_pool:
+        return {
+            "answerable": False,
+            "chunks": [],
+            "blocked_reason": (
+                "All selected documents were blocked due to low trust scores "
+                "(prompt injection content detected at ingestion). "
+                "Please upload clean documents."
+            ),
+        }
+
+    # Step 3: Hybrid search
+    texts  = [c['content'] for c in trusted_pool]
+    scores = hybrid_search(query, texts)
+
+    # Step 4: Take TOP_K before reranking
+    scored = sorted(zip(trusted_pool, scores), key=lambda x: x[1], reverse=True)[:TOP_K]
+    top_chunks = [x[0] for x in scored]
+    top_scores = [x[1] for x in scored]
+
+    # Step 5: Answerability check
+    if not top_scores or top_scores[0] < 0.05:
+        return {
+            "answerable": False,
+            "chunks": [],
+            "blocked_reason": "No sufficiently relevant content found for this query.",
+        }
+
+    # Step 6: Rerank with trust weighting + per-doc diversity cap
+    final_chunks = rerank(top_chunks, top_scores)
+
     return {
-        "answerable": len(reranked) > 0,
-        "chunks":     [c[0] for c in reranked],
-        "metadatas":  [c[1] for c in reranked],
-        "scores":     [c[2] for c in reranked]
+        "answerable": True,
+        "chunks": final_chunks,
+        "blocked_reason": None,
     }

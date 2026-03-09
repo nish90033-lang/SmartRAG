@@ -654,3 +654,22 @@ body {
   .auth-panel   { padding: 28px 22px; }
   .main-content { padding: 20px 14px; }
 }
+
+textarea.field-input {
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--slate-500);
+  background: var(--navy-950);
+  color: var(--white);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  transition: border-color var(--ease), box-shadow var(--ease);
+  outline: none;
+}
+textarea.field-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+textarea.field-input::placeholder { color: var(--slate-400); }
