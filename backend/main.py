@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Header
+from fastapi import FastAPI, UploadFile, File, HTTPException, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import shutil
@@ -64,6 +64,11 @@ def get_current_user(authorization: Optional[str] = Header(None)):
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
+
+@app.get("/favicon.ico")
+def favicon():
+    return Response(status_code=204)
+
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def root():
@@ -138,11 +143,6 @@ async def upload_text(
     request:       TextUploadRequest,
     authorization: Optional[str] = Header(None)
 ):
-    """
-    Ingest plain text directly — no PDF required.
-    Accepts any block of text: notes, articles, code, pasted content.
-    Uses the same pipeline as /upload (sanitize → trust → chunk → store).
-    """
     user    = get_current_user(authorization)
     user_id = str(user["id"])
 
@@ -160,7 +160,7 @@ async def upload_text(
         doc_hash    = result["doc_hash"],
         trust_score = result["trust_score"],
         chunk_count = result["chunk_count"],
-        filename    = request.doc_name,      # friendly name shown in UI
+        filename    = request.doc_name,
     )
     save_chunks(user_id, result["doc_id"], result["chunks"], result["trust_score"])
 
@@ -195,43 +195,37 @@ def query_document(
     if not user_chunks:
         raise HTTPException(status_code=400, detail="No documents found. Please upload a PDF first.")
 
-    chunks    = [c["content"] for c in user_chunks]
-    metadatas = [
-        {
-            "doc_id":      c["doc_id"],
-            "trust":       c["trust_score"],
-            "chunk_index": c["chunk_index"]
-        }
-        for c in user_chunks
-    ]
-
-    retrieval_result = retrieve(request.question, chunks, metadatas)
+    # Pass chunk dicts directly — retrieval.py expects list[dict] with
+    # keys: content, doc_id, trust_score, chunk_index
+    retrieval_result = retrieve(request.question, user_chunks)
 
     if not retrieval_result["answerable"]:
-        answer = "I don't have enough information in your documents to answer that."
+        answer = retrieval_result.get("blocked_reason") or \
+                 "I don't have enough information in your documents to answer that."
         save_chat(user_id, request.question, answer, False)
         return {"answer": answer, "answerable": False, "sources": []}
 
+    # Extract plain text for LLM
+    top_chunks  = retrieval_result["chunks"]
+    chunk_texts = [c["content"] for c in top_chunks]
+
     if request.use_llm:
-        answer = generate_answer(request.question, retrieval_result["chunks"])
+        answer = generate_answer(request.question, chunk_texts)
     else:
-        answer = fallback_answer(retrieval_result["chunks"])
+        answer = fallback_answer(chunk_texts)
 
     save_chat(user_id, request.question, answer, True)
 
+    # Build sources from reranked chunk dicts
     sources = [
         {
-            "chunk_index":     meta.get("chunk_index", i + 1),
-            "doc_id":          meta.get("doc_id", "unknown"),
-            "trust_score":     meta.get("trust", 100.0),
-            "relevance_score": round(score * 100, 1),
-            "excerpt":         chunk[:200] + "..."
+            "chunk_index":     c.get("chunk_index", i + 1),
+            "doc_id":          c.get("doc_id", "unknown"),
+            "trust_score":     c.get("trust_score", 100.0),
+            "relevance_score": c.get("relevance_score", 0.0),
+            "excerpt":         c.get("content", "")[:200] + "..."
         }
-        for i, (chunk, meta, score) in enumerate(zip(
-            retrieval_result["chunks"],
-            retrieval_result["metadatas"],
-            retrieval_result["scores"]
-        ))
+        for i, c in enumerate(top_chunks)
     ]
 
     sources.sort(key=lambda x: -x["relevance_score"])
