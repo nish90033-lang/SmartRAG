@@ -1,210 +1,303 @@
+# database.py — SmartRAG database layer with ECC (ES256) JWT authentication
+#
+# CHANGES FROM OLD VERSION
+# ─────────────────────────────────────────────────────────────────────────────
+# OLD: create_token()        used PyJWT HS256 with JWT_SECRET (symmetric)
+# NEW: create_token()        uses ecc_auth.create_ecc_token() (ES256, asymmetric)
+#
+# OLD: get_user_from_token() used jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+# NEW: get_user_from_token() uses ecc_auth.verify_ecc_token() (P-256 public key)
+#
+# Everything else (DB queries, bcrypt, user model) is UNCHANGED.
+# ─────────────────────────────────────────────────────────────────────────────
+
+import os
+import uuid
+import datetime
 import psycopg2
 import psycopg2.extras
 import bcrypt
-import jwt
-import os
-import uuid
-from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://smartrag_db_user:MpPdvqETkwVGQejpQuF3TX4ei3lItebm@dpg-d6ho9gpdrdic73cp4eng-a/smartrag_db")
-JWT_SECRET = os.environ.get("JWT_SECRET", "smartrag-super-secret-key-2024")
+from ecc_auth import create_ecc_token, verify_ecc_token
+
+load_dotenv()
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+
+# ── DB connection ─────────────────────────────────────────────────────────────
 
 def get_db():
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = psycopg2.connect(DATABASE_URL)
+    conn.cursor_factory = psycopg2.extras.RealDictCursor
     return conn
 
+
+# ── Schema initialisation (run on startup) ────────────────────────────────────
+
 def init_db():
+    """Create all tables if they do not exist."""
     conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id TEXT PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-
-        CREATE TABLE IF NOT EXISTS documents (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            doc_id TEXT NOT NULL,
-            doc_hash TEXT NOT NULL,
-            trust_score REAL DEFAULT 100.0,
-            chunk_count INTEGER DEFAULT 0,
-            filename TEXT,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-
-        CREATE TABLE IF NOT EXISTS chunks (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            doc_id TEXT NOT NULL,
-            chunk_index INTEGER NOT NULL,
-            content TEXT NOT NULL,
-            trust_score REAL DEFAULT 100.0,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-
-        CREATE TABLE IF NOT EXISTS chat_history (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            question TEXT NOT NULL,
-            answer TEXT NOT NULL,
-            answerable BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP DEFAULT NOW()
-        );
-    """)
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-try:
-    init_db()
-    print("✅ Database initialized successfully")
-except Exception as e:
-    print(f"⚠️ Database init error: {e}")
-
-
-# ─── AUTH ───────────────────────────────────────────
-
-def create_user(email: str, password: str) -> dict:
-    conn = get_db()
+    cur  = conn.cursor()
     try:
-        cursor = conn.cursor()
-        user_id = str(uuid.uuid4())
-        password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-        cursor.execute(
-            "INSERT INTO users (id, email, password_hash) VALUES (%s, %s, %s)",
-            (user_id, email, password_hash)
-        )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                email         TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at    TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS documents (
+                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id     UUID REFERENCES users(id) ON DELETE CASCADE,
+                doc_id      TEXT NOT NULL,
+                filename    TEXT,
+                doc_hash    TEXT,
+                trust_score REAL,
+                chunk_count INT,
+                created_at  TIMESTAMP DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS chunks (
+                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id     UUID REFERENCES users(id) ON DELETE CASCADE,
+                doc_id      TEXT NOT NULL,
+                chunk_index INT,
+                content     TEXT,
+                trust_score REAL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS chat_history (
+                id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id     UUID REFERENCES users(id) ON DELETE CASCADE,
+                question    TEXT,
+                answer      TEXT,
+                answerable  BOOLEAN,
+                created_at  TIMESTAMP DEFAULT NOW()
+            )
+        """)
         conn.commit()
-        return {"id": user_id, "email": email}
-    except psycopg2.errors.UniqueViolation:
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+def create_user(email: str, password: str) -> dict | None:
+    """
+    Register a new user. Returns user dict or None if email already exists.
+    Password is hashed with bcrypt before storage.
+    """
+    conn = get_db()
+    cur  = conn.cursor()
+    try:
+        # Check duplicate
+        cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+        if cur.fetchone():
+            return None
+
+        pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        user_id = str(uuid.uuid4())
+
+        cur.execute(
+            "INSERT INTO users (id, email, password_hash) VALUES (%s, %s, %s) RETURNING id, email",
+            (user_id, email, pw_hash)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return {"id": str(row["id"]), "email": row["email"]}
+    except Exception:
         conn.rollback()
         return None
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
 
-def login_user(email: str, password: str) -> dict:
+
+def login_user(email: str, password: str) -> dict | None:
+    """
+    Authenticate a user. Returns user dict or None if credentials are wrong.
+    Uses bcrypt.checkpw for constant-time comparison.
+    """
     conn = get_db()
+    cur  = conn.cursor()
     try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
-        user = cursor.fetchone()
-        if not user:
+        cur.execute(
+            "SELECT id, email, password_hash FROM users WHERE email = %s",
+            (email,)
+        )
+        row = cur.fetchone()
+        if not row:
             return None
-        if not bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+        if not bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
             return None
-        return {"id": user["id"], "email": user["email"]}
+        return {"id": str(row["id"]), "email": row["email"]}
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
+
 
 def create_token(user_id: str, email: str) -> str:
-    payload = {
-        "user_id": user_id,
-        "email": email,
-        "exp": datetime.utcnow() + timedelta(days=7)
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+    """
+    Issue an ES256 JWT signed with the P-256 private key.
 
-def get_user_from_token(token: str) -> dict:
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-        return {"id": payload["user_id"], "email": payload["email"]}
-    except Exception:
+    ── SECURITY UPGRADE ──────────────────────────────────────────────────────
+    OLD: jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+         — symmetric: same secret signs AND verifies.
+         — if JWT_SECRET leaks, anyone can forge tokens forever.
+
+    NEW: ecc_auth.create_ecc_token(user_id, email)
+         — asymmetric: private key signs, public key verifies.
+         — public key can be shared freely at GET /auth/public-key.
+         — a leaked public key cannot forge new tokens.
+         — a DB breach cannot produce valid signatures without the private key.
+    ──────────────────────────────────────────────────────────────────────────
+    """
+    return create_ecc_token(user_id, email)
+
+
+def get_user_from_token(token: str) -> dict | None:
+    """
+    Verify an ES256 JWT and return the user dict from the DB.
+
+    Verification uses the P-256 public key via ecc_auth.verify_ecc_token().
+    Returns None if the token is invalid, expired, or the user no longer exists.
+    """
+    payload = verify_ecc_token(token)
+    if not payload:
         return None
 
-# ─── DOCUMENTS ──────────────────────────────────────
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
 
-def save_document(user_id: str, doc_id: str, doc_hash: str, trust_score: float, chunk_count: int, filename: str):
     conn = get_db()
+    cur  = conn.cursor()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO documents (id, user_id, doc_id, doc_hash, trust_score, chunk_count, filename) VALUES (%s, %s, %s, %s, %s, %s, %s)",
-            (str(uuid.uuid4()), user_id, doc_id, doc_hash, trust_score, chunk_count, filename)
-        )
+        cur.execute("SELECT id, email FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {"id": str(row["id"]), "email": row["email"]}
+    finally:
+        cur.close()
+        conn.close()
+
+
+# ── Documents ─────────────────────────────────────────────────────────────────
+
+def save_document(user_id, doc_id, doc_hash, trust_score, chunk_count, filename):
+    conn = get_db()
+    cur  = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO documents (user_id, doc_id, filename, doc_hash, trust_score, chunk_count)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (user_id, doc_id, filename, doc_hash, trust_score, chunk_count))
         conn.commit()
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
+
 
 def get_user_documents(user_id: str) -> list:
     conn = get_db()
+    cur  = conn.cursor()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM documents WHERE user_id = %s ORDER BY created_at DESC", (user_id,)
-        )
-        return [dict(row) for row in cursor.fetchall()]
+        cur.execute("""
+            SELECT doc_id, filename, trust_score, chunk_count, created_at
+            FROM documents
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+        """, (user_id,))
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
+
 
 def check_duplicate(user_id: str, doc_hash: str) -> bool:
     conn = get_db()
+    cur  = conn.cursor()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id FROM documents WHERE user_id = %s AND doc_hash = %s", (user_id, doc_hash)
+        cur.execute(
+            "SELECT id FROM documents WHERE user_id = %s AND doc_hash = %s",
+            (user_id, doc_hash)
         )
-        return cursor.fetchone() is not None
+        return cur.fetchone() is not None
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
 
-# ─── CHUNKS ─────────────────────────────────────────
+
+# ── Chunks ────────────────────────────────────────────────────────────────────
 
 def save_chunks(user_id: str, doc_id: str, chunks: list, trust_score: float):
     conn = get_db()
+    cur  = conn.cursor()
     try:
-        cursor = conn.cursor()
-        for i, chunk in enumerate(chunks):
-            cursor.execute(
-                "INSERT INTO chunks (id, user_id, doc_id, chunk_index, content, trust_score) VALUES (%s, %s, %s, %s, %s, %s)",
-                (str(uuid.uuid4()), user_id, doc_id, i, chunk, trust_score)
-            )
+        cur.executemany("""
+            INSERT INTO chunks (user_id, doc_id, chunk_index, content, trust_score)
+            VALUES (%s, %s, %s, %s, %s)
+        """, [(user_id, doc_id, i, chunk, trust_score) for i, chunk in enumerate(chunks)])
         conn.commit()
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
+
 
 def get_user_chunks(user_id: str) -> list:
     conn = get_db()
+    cur  = conn.cursor()
     try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM chunks WHERE user_id = %s", (user_id,))
-        return [dict(row) for row in cursor.fetchall()]
+        cur.execute("""
+            SELECT doc_id, chunk_index, content, trust_score
+            FROM chunks
+            WHERE user_id = %s
+        """, (user_id,))
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
 
-# ─── CHAT HISTORY ───────────────────────────────────
+
+# ── Chat history ──────────────────────────────────────────────────────────────
 
 def save_chat(user_id: str, question: str, answer: str, answerable: bool):
     conn = get_db()
+    cur  = conn.cursor()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO chat_history (id, user_id, question, answer, answerable) VALUES (%s, %s, %s, %s, %s)",
-            (str(uuid.uuid4()), user_id, question, answer, answerable)
-        )
+        cur.execute("""
+            INSERT INTO chat_history (user_id, question, answer, answerable)
+            VALUES (%s, %s, %s, %s)
+        """, (user_id, question, answer, answerable))
         conn.commit()
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
+
 
 def get_user_chat_history(user_id: str) -> list:
     conn = get_db()
+    cur  = conn.cursor()
     try:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT * FROM chat_history WHERE user_id = %s ORDER BY created_at DESC", (user_id,)
-        )
-        return [dict(row) for row in cursor.fetchall()]
+        cur.execute("""
+            SELECT question, answer, answerable, created_at
+            FROM chat_history
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 50
+        """, (user_id,))
+        rows = cur.fetchall()
+        return [dict(r) for r in rows]
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
-

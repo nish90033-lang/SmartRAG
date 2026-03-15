@@ -11,6 +11,7 @@ from typing import Optional
 from ingest import ingest_document
 from retrieval import retrieve
 from llm import generate_answer, fallback_answer
+from ecc_auth import get_public_jwk, get_public_key_pem   # ← ECC public key export
 from database import (
     get_user_from_token, save_document, save_chunks,
     get_user_chunks, save_chat, get_user_chat_history,
@@ -68,6 +69,29 @@ def get_current_user(authorization: Optional[str] = Header(None)):
 @app.get("/favicon.ico")
 def favicon():
     return Response(status_code=204)
+
+
+@app.get("/auth/public-key")
+def public_key():
+    """
+    Return the ECC P-256 public key in two formats:
+
+    • jwk — JSON Web Key object (standard, machine-readable)
+      Use this to verify SmartRAG JWTs from any external service or auditor.
+
+    • pem — PEM-encoded public key (human-readable)
+      Paste into jwt.io or any JWT debugger to inspect tokens.
+
+    The private key never leaves the server.
+    Tokens are signed with ES256 (P-256 ECDSA) — exposing this public key
+    cannot allow anyone to forge new tokens.
+    """
+    return {
+        "algorithm": "ES256",
+        "curve":     "P-256",
+        "jwk":       get_public_jwk(),
+        "pem":       get_public_key_pem(),
+    }
 
 
 @app.api_route("/", methods=["GET", "HEAD"])

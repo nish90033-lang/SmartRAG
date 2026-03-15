@@ -10,3 +10,5 @@ bcrypt
 pyjwt
 psycopg2-binary
 scikit-learn
+cryptography>=41.0.0
+PyJWT[crypto]>=2.8.0
