@@ -197,9 +197,9 @@ def save_document(user_id, doc_id, doc_hash, trust_score, chunk_count, filename)
     cur  = conn.cursor()
     try:
         cur.execute("""
-            INSERT INTO documents (user_id, doc_id, filename, doc_hash, trust_score, chunk_count)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (user_id, doc_id, filename, doc_hash, trust_score, chunk_count))
+            INSERT INTO documents (id, user_id, doc_id, filename, doc_hash, trust_score, chunk_count)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (str(uuid.uuid4()), user_id, doc_id, filename, doc_hash, trust_score, chunk_count))
         conn.commit()
     finally:
         cur.close()
@@ -244,9 +244,10 @@ def save_chunks(user_id: str, doc_id: str, chunks: list, trust_score: float):
     cur  = conn.cursor()
     try:
         cur.executemany("""
-            INSERT INTO chunks (user_id, doc_id, chunk_index, content, trust_score)
-            VALUES (%s, %s, %s, %s, %s)
-        """, [(user_id, doc_id, i, chunk, trust_score) for i, chunk in enumerate(chunks)])
+            INSERT INTO chunks (id, user_id, doc_id, chunk_index, content, trust_score)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, [(str(uuid.uuid4()), user_id, doc_id, i, chunk, trust_score)
+              for i, chunk in enumerate(chunks)])
         conn.commit()
     finally:
         cur.close()
@@ -276,9 +277,9 @@ def save_chat(user_id: str, question: str, answer: str, answerable: bool):
     cur  = conn.cursor()
     try:
         cur.execute("""
-            INSERT INTO chat_history (user_id, question, answer, answerable)
-            VALUES (%s, %s, %s, %s)
-        """, (user_id, question, answer, answerable))
+            INSERT INTO chat_history (id, user_id, question, answer, answerable)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (str(uuid.uuid4()), user_id, question, answer, answerable))
         conn.commit()
     finally:
         cur.close()
