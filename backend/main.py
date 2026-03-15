@@ -217,7 +217,7 @@ def query_document(
     # else: both None → search ALL user documents
 
     if not user_chunks:
-        raise HTTPException(status_code=400, detail="No documents found. Please upload a PDF first.")
+        raise HTTPException(status_code=400, detail="No documents found. Please upload a PDF or paste text first.")
 
     # Pass chunk dicts directly — retrieval.py expects list[dict] with
     # keys: content, doc_id, trust_score, chunk_index

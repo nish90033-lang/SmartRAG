@@ -158,6 +158,9 @@ def retrieve(
     top_scores = [x[1] for x in scored]
 
     # Step 5: Answerability check
+    # Threshold 0.02 (not 0.05) — text documents produce lower absolute similarity
+    # scores than PDFs because they have fewer chunks for BM25 to calibrate against.
+    # 0.05 incorrectly rejects valid queries on short text uploads.
     if not top_scores or top_scores[0] < 0.02:
         return {
             "answerable": False,

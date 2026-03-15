@@ -3,8 +3,11 @@ import hashlib
 import re
 import os
 
-# Store seen hashes to detect duplicates (per-process; DB check is the real guard)
-seen_hashes = set()
+# NOTE: in-memory seen_hashes removed.
+# The DB-level check_duplicate() in main.py is the authoritative duplicate guard.
+# A module-level set caused a silent trap: if ingest_document() ran but the DB insert
+# later failed (connection drop), the hash stayed "seen" in memory — future uploads
+# of the same content returned false duplicate errors until server restart.
 
 # ── Injection patterns ────────────────────────────────────────────────────────
 INJECTION_PATTERNS = [
@@ -71,13 +74,6 @@ def extract_text(source) -> tuple[str, str]:
 def fingerprint(text: str) -> str:
     """SHA256 hash of document text for duplicate detection."""
     return hashlib.sha256(text.encode()).hexdigest()
-
-def is_duplicate(hash_val: str) -> bool:
-    """In-memory duplicate check (DB check happens in main.py before this)."""
-    if hash_val in seen_hashes:
-        return True
-    seen_hashes.add(hash_val)
-    return False
 
 # ── Sanitization ──────────────────────────────────────────────────────────────
 
@@ -187,10 +183,8 @@ def ingest_document(source, doc_id: str = None) -> dict:
     if not text.strip():
         return {"error": "No text content found in the provided source."}
 
-    # Step 2: Fingerprint & duplicate check
+    # Step 2: Fingerprint (duplicate detection handled at DB level in main.py)
     doc_hash = fingerprint(text)
-    if is_duplicate(doc_hash):
-        return {"error": "Duplicate document detected. Skipping."}
 
     # Step 3: Sanitize
     sanitized, patterns_found = sanitize(text)
