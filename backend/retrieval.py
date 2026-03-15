@@ -54,6 +54,12 @@ def hybrid_search(query: str, chunks: list[str], weights: tuple = (0.7, 0.3)) ->
     bm25 = BM25Okapi(tokenized_chunks)
     bm25_raw = np.array(bm25.get_scores(tokenized_query))
 
+    # Floor BM25 at 0 before normalising.
+    # BM25 IDF goes negative when corpus has very few documents (e.g. 1 chunk
+    # from a short text upload), producing scores that drag the hybrid below
+    # the answerability threshold even when TF-IDF found a strong match.
+    bm25_raw = np.maximum(bm25_raw, 0)
+
     # Normalise BM25 to [0, 1] to match TF-IDF scale
     bm25_max = bm25_raw.max()
     bm25_scores = bm25_raw / bm25_max if bm25_max > 0 else bm25_raw
@@ -158,9 +164,9 @@ def retrieve(
     top_scores = [x[1] for x in scored]
 
     # Step 5: Answerability check
-    # Threshold 0.02 (not 0.05) — text documents produce lower absolute similarity
-    # scores than PDFs because they have fewer chunks for BM25 to calibrate against.
-    # 0.05 incorrectly rejects valid queries on short text uploads.
+    # Threshold 0.02 — text documents with few chunks produce lower absolute
+    # similarity scores than large PDFs. 0.05 incorrectly rejects valid queries
+    # on short text uploads. BM25 negative scores are already floored at 0 above.
     if not top_scores or top_scores[0] < 0.02:
         return {
             "answerable": False,
