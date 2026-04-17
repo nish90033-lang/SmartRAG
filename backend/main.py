@@ -12,14 +12,22 @@ from ingest import ingest_document
 from retrieval import retrieve
 from llm import generate_answer, fallback_answer
 from ecc_auth import get_public_jwk, get_public_key_pem   # ← ECC public key export
+# Change your existing import to include init_db
 from database import (
     get_user_from_token, save_document, save_chunks,
     get_user_chunks, save_chat, get_user_chat_history,
     check_duplicate, get_user_documents,
-    create_user, login_user, create_token
+    create_user, login_user, create_token, init_db  # <— Add init_db here
 )
 
 app = FastAPI(title="SmartRAG API")
+
+# Add this block here:
+@app.on_event("startup")
+def startup_event():
+    print("Initializing database...")
+    init_db()
+    print("Database tables verified.")
 
 app.add_middleware(
     CORSMiddleware,
