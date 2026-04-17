@@ -28,8 +28,11 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 # ── DB connection ─────────────────────────────────────────────────────────────
 
+# ── DB connection ─────────────────────────────────────────────────────────────
+
 def get_db():
-    conn = psycopg2.connect(DATABASE_URL)
+    # Adding sslmode="require" tells psycopg2 to encrypt the connection to Neon
+    conn = psycopg2.connect(DATABASE_URL, sslmode="require")
     conn.cursor_factory = psycopg2.extras.RealDictCursor
     return conn
 
