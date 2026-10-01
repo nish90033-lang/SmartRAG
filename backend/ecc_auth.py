@@ -1,27 +1,3 @@
-# ecc_auth.py — ECC (P-256 / ES256) JWT authentication layer for SmartRAG
-#
-# HOW IT WORKS
-# ─────────────────────────────────────────────────────────────────────────────
-# HS256 (old): one shared secret signs AND verifies.
-#   → If the secret leaks, anyone can forge tokens forever.
-#
-# ES256 (new): asymmetric P-256 elliptic curve key pair.
-#   PRIVATE KEY  → signs new JWTs at login/signup (server only, never exposed)
-#   PUBLIC  KEY  → verifies incoming JWTs (can be published safely)
-#   → A DB breach or env-var leak of the PUBLIC key cannot forge tokens.
-#   → Only the private key can produce valid signatures.
-#
-# SETUP (one-time, run once then paste output into Render env vars)
-# ─────────────────────────────────────────────────────────────────────────────
-#   python ecc_auth.py
-#
-# This prints:
-#   ECC_PRIVATE_KEY=<PEM>
-#   ECC_PUBLIC_KEY=<PEM>
-#
-# Add both to your Render environment variables.
-# ─────────────────────────────────────────────────────────────────────────────
-
 import os
 import json
 import base64
@@ -33,7 +9,6 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 
 
-# ── Key loading ───────────────────────────────────────────────────────────────
 
 def _load_private_key():
     """Load P-256 private key from ECC_PRIVATE_KEY env var (PEM string)."""
@@ -44,7 +19,7 @@ def _load_private_key():
             "Run `python ecc_auth.py` once to generate keys, "
             "then add them to your Render environment variables."
         )
-    # Env vars flatten newlines; restore them
+
     pem = pem.replace("\\n", "\n")
     return serialization.load_pem_private_key(
         pem.encode(), password=None, backend=default_backend()
@@ -62,8 +37,6 @@ def _load_public_key():
     pem = pem.replace("\\n", "\n")
     return serialization.load_pem_public_key(pem.encode(), backend=default_backend())
 
-
-# ── Token operations ──────────────────────────────────────────────────────────
 
 def create_ecc_token(user_id: str, email: str, expiry_days: int = 7) -> str:
     """
@@ -100,17 +73,16 @@ def verify_ecc_token(token: str) -> dict | None:
         payload = jwt.decode(
             token,
             public_key,
-            algorithms=["ES256"],    # explicitly whitelist — never allow "none" or HS256
+            algorithms=["ES256"],   
             options={"verify_exp": True},
         )
         return payload
     except jwt.ExpiredSignatureError:
-        return None   # token expired — user must log in again
+        return None   
     except jwt.InvalidTokenError:
-        return None   # bad signature, tampered, wrong algorithm, etc.
+        return None 
 
 
-# ── JWK export (public key as JSON Web Key) ───────────────────────────────────
 
 def get_public_jwk() -> dict:
     """

@@ -1,16 +1,3 @@
-# database.py — SmartRAG database layer with ECC (ES256) JWT authentication
-#
-# CHANGES FROM OLD VERSION
-# ─────────────────────────────────────────────────────────────────────────────
-# OLD: create_token()        used PyJWT HS256 with JWT_SECRET (symmetric)
-# NEW: create_token()        uses ecc_auth.create_ecc_token() (ES256, asymmetric)
-#
-# OLD: get_user_from_token() used jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
-# NEW: get_user_from_token() uses ecc_auth.verify_ecc_token() (P-256 public key)
-#
-# Everything else (DB queries, bcrypt, user model) is UNCHANGED.
-# ─────────────────────────────────────────────────────────────────────────────
-
 import os
 import uuid
 import datetime
@@ -25,11 +12,6 @@ load_dotenv()
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-
-# ── DB connection ─────────────────────────────────────────────────────────────
-
-# ── DB connection ─────────────────────────────────────────────────────────────
-
 def get_db():
     # Adding sslmode="require" tells psycopg2 to encrypt the connection to Neon
     conn = psycopg2.connect(DATABASE_URL, sslmode="require")
@@ -37,7 +19,7 @@ def get_db():
     return conn
 
 
-# ── Schema initialisation (run on startup) ────────────────────────────────────
+
 
 def init_db():
     """Create all tables if they do not exist."""
@@ -89,8 +71,6 @@ def init_db():
         cur.close()
         conn.close()
 
-
-# ── Auth ──────────────────────────────────────────────────────────────────────
 
 def create_user(email: str, password: str) -> dict | None:
     """
@@ -193,8 +173,6 @@ def get_user_from_token(token: str) -> dict | None:
         conn.close()
 
 
-# ── Documents ─────────────────────────────────────────────────────────────────
-
 def save_document(user_id, doc_id, doc_hash, trust_score, chunk_count, filename):
     conn = get_db()
     cur  = conn.cursor()
@@ -240,8 +218,6 @@ def check_duplicate(user_id: str, doc_hash: str) -> bool:
         conn.close()
 
 
-# ── Chunks ────────────────────────────────────────────────────────────────────
-
 def save_chunks(user_id: str, doc_id: str, chunks: list, trust_score: float):
     conn = get_db()
     cur  = conn.cursor()
@@ -273,7 +249,6 @@ def get_user_chunks(user_id: str) -> list:
         conn.close()
 
 
-# ── Chat history ──────────────────────────────────────────────────────────────
 
 def save_chat(user_id: str, question: str, answer: str, answerable: bool):
     conn = get_db()

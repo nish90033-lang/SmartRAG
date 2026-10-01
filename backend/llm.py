@@ -43,7 +43,7 @@ Question:
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        temperature=0.1,   # Lower = more deterministic
+        temperature=0.1,   
         max_tokens=512
     )
 

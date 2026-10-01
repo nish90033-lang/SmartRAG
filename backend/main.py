@@ -11,18 +11,18 @@ from typing import Optional
 from ingest import ingest_document
 from retrieval import retrieve
 from llm import generate_answer, fallback_answer
-from ecc_auth import get_public_jwk, get_public_key_pem   # ← ECC public key export
-# Change your existing import to include init_db
+from ecc_auth import get_public_jwk, get_public_key_pem   
+
 from database import (
     get_user_from_token, save_document, save_chunks,
     get_user_chunks, save_chat, get_user_chat_history,
     check_duplicate, get_user_documents,
-    create_user, login_user, create_token, init_db  # <— Add init_db here
+    create_user, login_user, create_token, init_db  
 )
 
 app = FastAPI(title="SmartRAG API")
 
-# Add this block here:
+
 @app.on_event("startup")
 def startup_event():
     print("Initializing database...")
@@ -41,7 +41,7 @@ UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
-# ── Pydantic models ───────────────────────────────────────────────────────────
+
 
 class AuthRequest(BaseModel):
     email:    str
@@ -51,8 +51,8 @@ class AuthRequest(BaseModel):
 class QueryRequest(BaseModel):
     question: str
     use_llm:  bool                = True
-    doc_id:   Optional[str]       = None   # legacy single-doc
-    doc_ids:  Optional[list[str]] = None   # multi-doc selection
+    doc_id:   Optional[str]       = None   
+    doc_ids:  Optional[list[str]] = None   
 
 
 class TextUploadRequest(BaseModel):
@@ -60,7 +60,7 @@ class TextUploadRequest(BaseModel):
     doc_name: str = "Untitled Text Document"
 
 
-# ── Auth helper ───────────────────────────────────────────────────────────────
+
 
 def get_current_user(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -72,7 +72,7 @@ def get_current_user(authorization: Optional[str] = Header(None)):
     return user
 
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+
 
 @app.get("/favicon.ico")
 def favicon():
@@ -217,18 +217,18 @@ def query_document(
 
     user_chunks = get_user_chunks(user_id)
 
-    # Document filtering
+    
     if request.doc_ids:
         user_chunks = [c for c in user_chunks if c["doc_id"] in request.doc_ids]
     elif request.doc_id:
         user_chunks = [c for c in user_chunks if c["doc_id"] == request.doc_id]
-    # else: both None → search ALL user documents
+    
 
     if not user_chunks:
         raise HTTPException(status_code=400, detail="No documents found. Please upload a PDF or paste text first.")
 
-    # Pass chunk dicts directly — retrieval.py expects list[dict] with
-    # keys: content, doc_id, trust_score, chunk_index
+    
+    
     retrieval_result = retrieve(request.question, user_chunks)
 
     if not retrieval_result["answerable"]:
@@ -237,7 +237,7 @@ def query_document(
         save_chat(user_id, request.question, answer, False)
         return {"answer": answer, "answerable": False, "sources": []}
 
-    # Extract plain text for LLM
+    
     top_chunks  = retrieval_result["chunks"]
     chunk_texts = [c["content"] for c in top_chunks]
 
@@ -248,7 +248,7 @@ def query_document(
 
     save_chat(user_id, request.question, answer, True)
 
-    # Build sources from reranked chunk dicts
+    
     sources = [
         {
             "chunk_index":     c.get("chunk_index", i + 1),

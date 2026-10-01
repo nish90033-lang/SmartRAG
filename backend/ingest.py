@@ -1,15 +1,9 @@
-import fitz  # PyMuPDF
+import fitz  
 import hashlib
 import re
 import os
 
-# NOTE: in-memory seen_hashes removed.
-# The DB-level check_duplicate() in main.py is the authoritative duplicate guard.
-# A module-level set caused a silent trap: if ingest_document() ran but the DB insert
-# later failed (connection drop), the hash stayed "seen" in memory — future uploads
-# of the same content returned false duplicate errors until server restart.
 
-# ── Injection patterns ────────────────────────────────────────────────────────
 INJECTION_PATTERNS = [
     r'ignore\s+(all\s+)?previous\s+instructions',
     r'disregard\s+(all\s+)?',
@@ -25,7 +19,6 @@ INJECTION_PATTERNS = [
     r'jailbreak',
 ]
 
-# ── Text extraction ───────────────────────────────────────────────────────────
 
 def extract_text_from_pdf(file_path: str) -> str:
     """
@@ -38,7 +31,7 @@ def extract_text_from_pdf(file_path: str) -> str:
     pages = []
     for page in doc:
         pages.append(page.get_text())
-        page = None          # release page object immediately
+        page = None          
     doc.close()
     return "\n".join(pages)
 
@@ -69,13 +62,11 @@ def extract_text(source) -> tuple[str, str]:
 
     raise ValueError(f"Unsupported source type: {type(source)}")
 
-# ── Fingerprinting ────────────────────────────────────────────────────────────
 
 def fingerprint(text: str) -> str:
     """SHA256 hash of document text for duplicate detection."""
     return hashlib.sha256(text.encode()).hexdigest()
 
-# ── Sanitization ──────────────────────────────────────────────────────────────
 
 def sanitize(text: str) -> tuple[str, int]:
     """
@@ -95,7 +86,6 @@ def sanitize(text: str) -> tuple[str, int]:
     clean = re.sub(r'\s+', ' ', clean).strip()
     return clean, patterns_found
 
-# ── Trust scoring ─────────────────────────────────────────────────────────────
 
 def compute_trust_score(original_text: str, clean_text: str, patterns_found: int) -> float:
     """
@@ -116,7 +106,6 @@ def compute_trust_score(original_text: str, clean_text: str, patterns_found: int
 
     return round(base_score, 1)
 
-# ── Chunking ──────────────────────────────────────────────────────────────────
 
 def chunk_text(
     text: str,
@@ -143,11 +132,10 @@ def chunk_text(
         if chunk.strip():
             chunks.append(chunk)
         if len(chunks) >= max_chunks:
-            break                        # hard stop — prevents OOM on 800+ page docs
+            break                        
 
     return chunks
 
-# ── Main ingestion pipeline ───────────────────────────────────────────────────
 
 def ingest_document(source, doc_id: str = None) -> dict:
     """
@@ -174,7 +162,6 @@ def ingest_document(source, doc_id: str = None) -> dict:
         {"error": "..."}
     """
 
-    # Step 1: Extract text
     try:
         text, source_type = extract_text(source)
     except Exception as e:
@@ -183,16 +170,13 @@ def ingest_document(source, doc_id: str = None) -> dict:
     if not text.strip():
         return {"error": "No text content found in the provided source."}
 
-    # Step 2: Fingerprint (duplicate detection handled at DB level in main.py)
+    
     doc_hash = fingerprint(text)
 
-    # Step 3: Sanitize
     sanitized, patterns_found = sanitize(text)
 
-    # Step 4: Trust score
     trust_score = compute_trust_score(text, sanitized, patterns_found)
 
-    # Step 5: Chunk (with hard cap)
     total_words = len(sanitized.split())
     chunks = chunk_text(sanitized)
     truncated = len(chunks) == 800 and total_words > 800 * (400 - 50)
@@ -200,7 +184,6 @@ def ingest_document(source, doc_id: str = None) -> dict:
     if not chunks:
         return {"error": "Document produced no text chunks after processing."}
 
-    # Step 6: Derive doc_id
     if doc_id is None:
         if source_type == 'pdf' and isinstance(source, str):
             doc_id = os.path.splitext(os.path.basename(source))[0]
@@ -215,5 +198,5 @@ def ingest_document(source, doc_id: str = None) -> dict:
         "source_type":    source_type,
         "chunks":         chunks,
         "chunk_count":    len(chunks),
-        "truncated":      truncated,     # True if doc exceeded 800-chunk cap
+        "truncated":      truncated,     
     }
